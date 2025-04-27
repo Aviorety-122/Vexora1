@@ -1,0 +1,710 @@
+-- Load required services
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
+
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+local Alive = workspace:WaitForChild("Alive")
+local Camera = workspace.CurrentCamera
+
+-- Variables for remote events and parry control
+local Remotes = {}
+local Parry_Key = nil
+local Parry_Data = nil
+local Parry_Type = "Custom"
+local Cooldown = 0
+local IsParried = false
+local Connection = nil
+local IsAutoParryEnabled = false
+local ParryRadius = 15
+local PredictionTime = 0.1
+local Parries = 0
+local Last_Input = UserInputService:GetLastInputType()
+
+-- Capture remotes via debug (unchanged)
+task.spawn(function()
+    for _, Value in pairs(getgc()) do
+        if type(Value) == "function" and islclosure(Value) then
+            if debug.getupvalues(Value) then
+                local Protos = debug.getprotos(Value)
+                local Upvalues = debug.getupvalues(Value)
+                local Constants = debug.getconstants(Value)
+                if #Protos == 4 and #Upvalues == 24 and #Constants == 104 then
+                    Remotes[debug.getupvalue(Value, 16)] = debug.getconstant(Value, 62)
+                    Parry_Key = debug.getupvalue(Value, 17)
+                    Remotes[debug.getupvalue(Value, 18)] = debug.getconstant(Value, 64)
+                    Remotes[debug.getupvalue(Value, 19)] = debug.getconstant(Value, 65)
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- Utility to get the current valid Ball from workspace.Balls
+local function GetBall()
+    local balls = workspace:FindFirstChild("Balls")
+    if not balls then return nil end
+    for _, Ball in ipairs(balls:GetChildren()) do
+        if Ball:GetAttribute("realBall") then
+            return Ball
+        end
+    end
+    return nil
+end
+
+local function ResetConnection()
+    if Connection then
+        Connection:Disconnect()
+        Connection = nil
+    end
+end
+
+-- Monitor new balls and reset parry state
+workspace:WaitForChild("Balls").ChildAdded:Connect(function()
+    local Ball = GetBall()
+    if not Ball then return end
+    ResetConnection()
+    Connection = Ball:GetAttributeChangedSignal("target"):Connect(function()
+        IsParried = false
+    end)
+end)
+
+local function PredictBallPosition(Ball, TimeAhead)
+    local Velocity = (Ball:FindFirstChild("zoomies") and Ball.zoomies.VectorVelocity) or Vector3.new(0, 0, 0)
+    return Ball.Position + Velocity * TimeAhead
+end
+
+local function AutoParry()
+    if not IsAutoParryEnabled then return end
+    local Ball = GetBall()
+    local Character = LocalPlayer.Character
+    if not Ball or not Character then return end
+    local HRP = Character:FindFirstChild("HumanoidRootPart")
+    if not HRP then return end
+
+    if Ball:GetAttribute("target") == LocalPlayer.Name and not IsParried then  
+        local PredictedPosition = PredictBallPosition(Ball, PredictionTime)  
+        local DistanceToPredicted = (HRP.Position - PredictedPosition).Magnitude  
+        if DistanceToPredicted <= ParryRadius then  
+            for Remote, Args in pairs(Remotes) do  
+                Remote:FireServer(Args, Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])  
+            end  
+            IsParried = true  
+            Cooldown = tick()  
+        end  
+    end  
+    if IsParried and (tick() - Cooldown) >= 1 then  
+        IsParried = false  
+    end
+end
+
+RunService.PreSimulation:Connect(AutoParry)
+
+-- Update parry data based on selected curve type
+local function updateParryData(parryType)
+    local Vector3_Mouse_Location
+    if Last_Input == Enum.UserInputType.MouseButton1 or
+       Last_Input == Enum.UserInputType.MouseButton2 or
+       Last_Input == Enum.UserInputType.Keyboard then
+        local Mouse_Location = UserInputService:GetMouseLocation()
+        Vector3_Mouse_Location = {Mouse_Location.X, Mouse_Location.Y}
+    else
+        Vector3_Mouse_Location = {Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2}
+    end
+    local Events = {}
+    for _, v in pairs(Alive:GetChildren()) do
+        if v:FindFirstChild("PrimaryPart") then
+            Events[tostring(v)] = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
+        end
+    end
+
+    local data  
+    if parryType == "Custom" then  
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}  
+    elseif parryType == "Backwards" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Random" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Vector3.new(math.random(-3000,3000), math.random(-3000,3000), math.random(-3000,3000))), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Straight" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Up" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.UpVector * 1000)), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Right" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Left" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}  
+    else  
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}  
+    end  
+
+    Parry_Data = data
+end
+
+-- Initialize parry data
+updateParryData(Parry_Type)
+
+-- Remote event listeners
+ReplicatedStorage:WaitForChild("Remotes").ParrySuccess.OnClientEvent:Connect(function()
+    if LocalPlayer.Character and LocalPlayer.Character.Parent ~= Alive then
+        return
+    end
+end)
+
+ReplicatedStorage:WaitForChild("Remotes").ParrySuccessAll.OnClientEvent:Connect(function(_, root)
+    if root and root.Parent and root.Parent ~= LocalPlayer.Character then
+        if root.Parent.Parent ~= Alive then
+            return
+        end
+    end
+end)
+
+-- Create UI based on the screenshot
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "BladeUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+
+-- Main container
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainContainer"
+MainFrame.Size = UDim2.new(0, 650, 0, 400)
+MainFrame.Position = UDim2.new(0.5, -325, 0.5, -200)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+MainFrame.BackgroundTransparency = 0.1
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = MainFrame
+
+-- Left sidebar
+local Sidebar = Instance.new("Frame")
+Sidebar.Name = "Sidebar"
+Sidebar.Size = UDim2.new(0, 150, 1, 0)
+Sidebar.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+Sidebar.BackgroundTransparency = 0.1
+Sidebar.BorderSizePixel = 0
+Sidebar.Parent = MainFrame
+
+local SidebarCorner = Instance.new("UICorner")
+SidebarCorner.CornerRadius = UDim.new(0, 10)
+SidebarCorner.Parent = Sidebar
+
+-- Logo container
+local LogoContainer = Instance.new("Frame")
+LogoContainer.Name = "LogoContainer"
+LogoContainer.Size = UDim2.new(0, 80, 0, 80)
+LogoContainer.Position = UDim2.new(0.5, -40, 0, 30)
+LogoContainer.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+LogoContainer.BackgroundTransparency = 0.5
+LogoContainer.BorderSizePixel = 0
+LogoContainer.Parent = Sidebar
+
+local LogoCorner = Instance.new("UICorner")
+LogoCorner.CornerRadius = UDim.new(1, 0)
+LogoCorner.Parent = LogoContainer
+
+local LogoStroke = Instance.new("UIStroke")
+LogoStroke.Color = Color3.fromRGB(130, 70, 255)
+LogoStroke.Thickness = 3
+LogoStroke.Parent = LogoContainer
+
+local LogoImage = Instance.new("ImageLabel")
+LogoImage.Name = "LogoImage"
+LogoImage.Size = UDim2.new(0.8, 0, 0.8, 0)
+LogoImage.Position = UDim2.new(0.1, 0, 0.1, 0)
+LogoImage.BackgroundTransparency = 1
+LogoImage.Image = "rbxassetid://11556465616" -- Ninja mask icon
+LogoImage.Parent = LogoContainer
+
+-- Sidebar buttons
+local function CreateSidebarButton(name, position, icon)
+    local Button = Instance.new("TextButton")
+    Button.Name = name .. "Button"
+    Button.Size = UDim2.new(0.8, 0, 0, 30)
+    Button.Position = UDim2.new(0.1, 0, 0, position)
+    Button.BackgroundTransparency = 1
+    Button.Text = name
+    Button.TextColor3 = Color3.fromRGB(200, 200, 200)
+    Button.TextSize = 14
+    Button.Font = Enum.Font.GothamSemibold
+    Button.TextXAlignment = Enum.TextXAlignment.Left
+    Button.Parent = Sidebar
+    
+    local Icon = Instance.new("ImageLabel")
+    Icon.Size = UDim2.new(0, 16, 0, 16)
+    Icon.Position = UDim2.new(0, 5, 0.5, -8)
+    Icon.BackgroundTransparency = 1
+    Icon.Image = icon
+    Icon.Parent = Button
+    
+    Button.MouseEnter:Connect(function()
+        Button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    end)
+    
+    Button.MouseLeave:Connect(function()
+        Button.TextColor3 = Color3.fromRGB(200, 200, 200)
+    end)
+    
+    return Button
+end
+
+CreateSidebarButton("Allusive", 130, "rbxassetid://7733715400")
+CreateSidebarButton("Blatant", 170, "rbxassetid://7733774602")
+CreateSidebarButton("Player", 210, "rbxassetid://7743878358")
+CreateSidebarButton("World", 250, "rbxassetid://7743878496")
+local MiscButton = CreateSidebarButton("Misc", 290, "rbxassetid://7743878563")
+
+-- Highlight the Misc button
+MiscButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+local HighlightBar = Instance.new("Frame")
+HighlightBar.Name = "HighlightBar"
+HighlightBar.Size = UDim2.new(0, 3, 0, 30)
+HighlightBar.Position = UDim2.new(0, 0, 0, 290)
+HighlightBar.BackgroundColor3 = Color3.fromRGB(130, 70, 255)
+HighlightBar.BorderSizePixel = 0
+HighlightBar.Parent = Sidebar
+
+-- Content area
+local ContentArea = Instance.new("Frame")
+ContentArea.Name = "ContentArea"
+ContentArea.Size = UDim2.new(1, -160, 1, -20)
+ContentArea.Position = UDim2.new(0, 155, 0, 10)
+ContentArea.BackgroundTransparency = 1
+ContentArea.Parent = MainFrame
+
+-- Left panel
+local LeftPanel = Instance.new("Frame")
+LeftPanel.Name = "LeftPanel"
+LeftPanel.Size = UDim2.new(0.45, 0, 1, 0)
+LeftPanel.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+LeftPanel.BorderSizePixel = 0
+LeftPanel.Parent = ContentArea
+
+local LeftPanelCorner = Instance.new("UICorner")
+LeftPanelCorner.CornerRadius = UDim.new(0, 8)
+LeftPanelCorner.Parent = LeftPanel
+
+-- Right panel
+local RightPanel = Instance.new("Frame")
+RightPanel.Name = "RightPanel"
+RightPanel.Size = UDim2.new(0.53, 0, 1, 0)
+RightPanel.Position = UDim2.new(0.47, 0, 0, 0)
+RightPanel.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+RightPanel.BorderSizePixel = 0
+RightPanel.Parent = ContentArea
+
+local RightPanelCorner = Instance.new("UICorner")
+RightPanelCorner.CornerRadius = UDim.new(0, 8)
+RightPanelCorner.Parent = RightPanel
+
+-- Left panel content
+local function CreateModuleSection(parent, title, description, position)
+    local Section = Instance.new("Frame")
+    Section.Name = title .. "Section"
+    Section.Size = UDim2.new(1, -20, 0, 100)
+    Section.Position = UDim2.new(0, 10, 0, position)
+    Section.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+    Section.BorderSizePixel = 0
+    Section.Parent = parent
+    
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, 0, 0, 20)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = title
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleLabel.TextSize = 14
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = Section
+    
+    local DescriptionLabel = Instance.new("TextLabel")
+    DescriptionLabel.Size = UDim2.new(1, 0, 0, 20)
+    DescriptionLabel.Position = UDim2.new(0, 0, 0, 20)
+    DescriptionLabel.BackgroundTransparency = 1
+    DescriptionLabel.Text = description
+    DescriptionLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    DescriptionLabel.TextSize = 12
+    DescriptionLabel.Font = Enum.Font.Gotham
+    DescriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
+    DescriptionLabel.Parent = Section
+    
+    local ToggleContainer = Instance.new("Frame")
+    ToggleContainer.Size = UDim2.new(1, 0, 0, 30)
+    ToggleContainer.Position = UDim2.new(0, 0, 0, 50)
+    ToggleContainer.BackgroundTransparency = 1
+    ToggleContainer.Parent = Section
+    
+    local ToggleText = Instance.new("TextLabel")
+    ToggleText.Size = UDim2.new(0, 40, 1, 0)
+    ToggleText.BackgroundTransparency = 1
+    ToggleText.Text = "None"
+    ToggleText.TextColor3 = Color3.fromRGB(200, 200, 200)
+    ToggleText.TextSize = 12
+    ToggleText.Font = Enum.Font.Gotham
+    ToggleText.Parent = ToggleContainer
+    
+    local ToggleButton = Instance.new("TextButton")
+    ToggleButton.Size = UDim2.new(0, 40, 0, 20)
+    ToggleButton.Position = UDim2.new(1, -50, 0.5, -10)
+    ToggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    ToggleButton.Text = ""
+    ToggleButton.Parent = ToggleContainer
+    
+    local ToggleCorner = Instance.new("UICorner")
+    ToggleCorner.CornerRadius = UDim.new(0, 10)
+    ToggleCorner.Parent = ToggleButton
+    
+    local ToggleCircle = Instance.new("Frame")
+    ToggleCircle.Size = UDim2.new(0, 16, 0, 16)
+    ToggleCircle.Position = UDim2.new(0, 2, 0.5, -8)
+    ToggleCircle.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+    ToggleCircle.Parent = ToggleButton
+    
+    local ToggleCircleCorner = Instance.new("UICorner")
+    ToggleCircleCorner.CornerRadius = UDim.new(1, 0)
+    ToggleCircleCorner.Parent = ToggleCircle
+    
+    local Divider = Instance.new("Frame")
+    Divider.Size = UDim2.new(1, 0, 0, 1)
+    Divider.Position = UDim2.new(0, 0, 1, -1)
+    Divider.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    Divider.BorderSizePixel = 0
+    Divider.Parent = Section
+    
+    return Section, ToggleButton, ToggleCircle
+end
+
+local SkinChangerSection, SkinToggleBtn, SkinToggleCircle = CreateModuleSection(LeftPanel, "Skin Changer", "Skin Changer", 10)
+local BallStatsSection, BallStatsToggleBtn, BallStatsToggleCircle = CreateModuleSection(LeftPanel, "Ball Stats", "Shows exact stats display", 120)
+local AutoClaimSection, AutoClaimToggleBtn, AutoClaimToggleCircle = CreateModuleSection(LeftPanel, "Auto Claim Rewards", "Automatically claims rewards", 230)
+local NoRenderSection, NoRenderToggleBtn, NoRenderToggleCircle = CreateModuleSection(LeftPanel, "No Render", "Disables rendering of effects", 340)
+
+-- Right panel content
+local AutoPlayLabel = Instance.new("TextLabel")
+AutoPlayLabel.Size = UDim2.new(1, -20, 0, 20)
+AutoPlayLabel.Position = UDim2.new(0, 10, 0, 10)
+AutoPlayLabel.BackgroundTransparency = 1
+AutoPlayLabel.Text = "Auto Play"
+AutoPlayLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+AutoPlayLabel.TextSize = 14
+AutoPlayLabel.Font = Enum.Font.GothamBold
+AutoPlayLabel.TextXAlignment = Enum.TextXAlignment.Left
+AutoPlayLabel.Parent = RightPanel
+
+local AutoPlayDesc = Instance.new("TextLabel")
+AutoPlayDesc.Size = UDim2.new(1, -20, 0, 20)
+AutoPlayDesc.Position = UDim2.new(0, 10, 0, 30)
+AutoPlayDesc.BackgroundTransparency = 1
+AutoPlayDesc.Text = "Automatically Plays Game"
+AutoPlayDesc.TextColor3 = Color3.fromRGB(150, 150, 150)
+AutoPlayDesc.TextSize = 12
+AutoPlayDesc.Font = Enum.Font.Gotham
+AutoPlayDesc.TextXAlignment = Enum.TextXAlignment.Left
+AutoPlayDesc.Parent = RightPanel
+
+local AutoPlayToggle = Instance.new("Frame")
+AutoPlayToggle.Size = UDim2.new(1, -20, 0, 30)
+AutoPlayToggle.Position = UDim2.new(0, 10, 0, 60)
+AutoPlayToggle.BackgroundTransparency = 1
+AutoPlayToggle.Parent = RightPanel
+
+local AutoPlayText = Instance.new("TextLabel")
+AutoPlayText.Size = UDim2.new(0, 40, 1, 0)
+AutoPlayText.BackgroundTransparency = 1
+AutoPlayText.Text = "None"
+AutoPlayText.TextColor3 = Color3.fromRGB(200, 200, 200)
+AutoPlayText.TextSize = 12
+AutoPlayText.Font = Enum.Font.Gotham
+AutoPlayText.Parent = AutoPlayToggle
+
+local AutoPlayBtn = Instance.new("TextButton")
+AutoPlayBtn.Size = UDim2.new(0, 40, 0, 20)
+AutoPlayBtn.Position = UDim2.new(1, -50, 0.5, -10)
+AutoPlayBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+AutoPlayBtn.Text = ""
+AutoPlayBtn.Parent = AutoPlayToggle
+
+local AutoPlayBtnCorner = Instance.new("UICorner")
+AutoPlayBtnCorner.CornerRadius = UDim.new(0, 10)
+AutoPlayBtnCorner.Parent = AutoPlayBtn
+
+local AutoPlayCircle = Instance.new("Frame")
+AutoPlayCircle.Size = UDim2.new(0, 16, 0, 16)
+AutoPlayCircle.Position = UDim2.new(0, 2, 0.5, -8)
+AutoPlayCircle.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+AutoPlayCircle.Parent = AutoPlayBtn
+
+local AutoPlayCircleCorner = Instance.new("UICorner")
+AutoPlayCircleCorner.CornerRadius = UDim.new(1, 0)
+AutoPlayCircleCorner.Parent = AutoPlayCircle
+
+-- Create checkboxes
+local function CreateCheckbox(parent, text, position)
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, -20, 0, 30)
+    Container.Position = position
+    Container.BackgroundTransparency = 1
+    Container.Parent = parent
+    
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(1, -30, 1, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = text
+    Label.TextColor3 = Color3.fromRGB(200, 200, 200)
+    Label.TextSize = 12
+    Label.Font = Enum.Font.Gotham
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Container
+    
+    local CheckboxBtn = Instance.new("TextButton")
+    CheckboxBtn.Size = UDim2.new(0, 20, 0, 20)
+    CheckboxBtn.Position = UDim2.new(1, -25, 0.5, -10)
+    CheckboxBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    CheckboxBtn.Text = ""
+    CheckboxBtn.Parent = Container
+    
+    local CheckboxCorner = Instance.new("UICorner")
+    CheckboxCorner.CornerRadius = UDim.new(0, 4)
+    CheckboxCorner.Parent = CheckboxBtn
+    
+    local CheckMark = Instance.new("ImageLabel")
+    CheckMark.Size = UDim2.new(0.8, 0, 0.8, 0)
+    CheckMark.Position = UDim2.new(0.1, 0, 0.1, 0)
+    CheckMark.BackgroundTransparency = 1
+    CheckMark.Image = "rbxassetid://7733715400"
+    CheckMark.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    CheckMark.Visible = false
+    CheckMark.Parent = CheckboxBtn
+    
+    local isChecked = false
+    
+    CheckboxBtn.MouseButton1Click:Connect(function()
+        isChecked = not isChecked
+        CheckMark.Visible = isChecked
+        
+        if text == "Anti AFK" then
+            -- Anti AFK logic
+        elseif text == "Enable Jumping" then
+            -- Enable Jumping logic
+        elseif text == "Auto Vote" then
+            -- Auto Vote logic
+        elseif text == "Auto Server Hop" then
+            -- Auto Server Hop logic
+        end
+    end)
+    
+    return Container, CheckboxBtn, CheckMark
+end
+
+local AntiAFK, AntiAFKBtn, AntiAFKCheck = CreateCheckbox(RightPanel, "Anti AFK", UDim2.new(0, 10, 0, 100))
+local EnableJumping, EnableJumpingBtn, EnableJumpingCheck = CreateCheckbox(RightPanel, "Enable Jumping", UDim2.new(0, 10, 0, 130))
+local AutoVote, AutoVoteBtn, AutoVoteCheck = CreateCheckbox(RightPanel, "Auto Vote", UDim2.new(0, 10, 0, 160))
+local AutoServerHop, AutoServerHopBtn, AutoServerHopCheck = CreateCheckbox(RightPanel, "Auto Server Hop", UDim2.new(0, 10, 0, 190))
+
+-- Create sliders
+local function CreateSlider(parent, text, min, max, default, position)
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, -20, 0, 40)
+    Container.Position = position
+    Container.BackgroundTransparency = 1
+    Container.Parent = parent
+    
+    local Label = Instance.new("TextLabel")
+    Label.Size = UDim2.new(0.7, 0, 0, 20)
+    Label.BackgroundTransparency = 1
+    Label.Text = text
+    Label.TextColor3 = Color3.fromRGB(200, 200, 200)
+    Label.TextSize = 12
+    Label.Font = Enum.Font.Gotham
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.Parent = Container
+    
+    local ValueLabel = Instance.new("TextLabel")
+    ValueLabel.Size = UDim2.new(0.3, 0, 0, 20)
+    ValueLabel.Position = UDim2.new(0.7, 0, 0, 0)
+    ValueLabel.BackgroundTransparency = 1
+    ValueLabel.Text = tostring(default)
+    ValueLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    ValueLabel.TextSize = 12
+    ValueLabel.Font = Enum.Font.Gotham
+    ValueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    ValueLabel.Parent = Container
+    
+    local SliderBG = Instance.new("Frame")
+    SliderBG.Size = UDim2.new(1, 0, 0, 6)
+    SliderBG.Position = UDim2.new(0, 0, 0.8, 0)
+    SliderBG.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    SliderBG.BorderSizePixel = 0
+    SliderBG.Parent = Container
+    
+    local SliderBGCorner = Instance.new("UICorner")
+    SliderBGCorner.CornerRadius = UDim.new(0, 3)
+    SliderBGCorner.Parent = SliderBG
+    
+    local SliderFill = Instance.new("Frame")
+    SliderFill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    SliderFill.BackgroundColor3 = Color3.fromRGB(130, 70, 255)
+    SliderFill.BorderSizePixel = 0
+    SliderFill.Parent = SliderBG
+    
+    local SliderFillCorner = Instance.new("UICorner")
+    SliderFillCorner.CornerRadius = UDim.new(0, 3)
+    SliderFillCorner.Parent = SliderFill
+    
+    local SliderButton = Instance.new("TextButton")
+    SliderButton.Size = UDim2.new(1, 0, 1, 0)
+    SliderButton.BackgroundTransparency = 1
+    SliderButton.Text = ""
+    SliderButton.Parent = SliderBG
+    
+    local value = default
+    
+    local function updateSlider(input)
+        local pos = math.clamp((input.Position.X - SliderBG.AbsolutePosition.X) / SliderBG.AbsoluteSize.X, 0, 1)
+        value = math.floor(min + ((max - min) * pos))
+        ValueLabel.Text = tostring(value)
+        SliderFill.Size = UDim2.new(pos, 0, 1, 0)
+        
+        if text == "Distance From Ball" then
+            ParryRadius = value
+        elseif text == "Speed Multiplier" then
+            -- Speed multiplier logic
+        elseif text == "Traversing" then
+            -- Traversing logic
+        elseif text == "Direction" then
+            -- Direction logic
+        elseif text == "Offset Factor" then
+            -- Offset factor logic
+        elseif text == "Movement Duration" then
+            -- Movement duration logic
+        elseif text == "Generation Threshold" then
+            -- Generation threshold logic
+        elseif text == "Jump Chance" then
+            -- Jump chance logic
+        elseif text == "Double Jump Chance" then
+            -- Double jump chance logic
+        end
+    end
+    
+    SliderButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local connection
+            connection = RunService.RenderStepped:Connect(function()
+                updateSlider(input)
+            end)
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    connection:Disconnect()
+                end
+            end)
+        end
+    end)
+    
+    SliderButton.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            updateSlider(input)
+        end
+    end)
+    
+    return Container, value
+end
+
+local DistanceSlider = CreateSlider(RightPanel, "Distance From Ball", 5, 50, 35, UDim2.new(0, 10, 0, 230))
+local SpeedSlider = CreateSlider(RightPanel, "Speed Multiplier", 1, 100, 50, UDim2.new(0, 10, 0, 280))
+local TraversingSlider = CreateSlider(RightPanel, "Traversing", 1, 100, 41, UDim2.new(0, 10, 0, 330))
+local DirectionSlider = CreateSlider(RightPanel, "Direction", 1, 10, 1, UDim2.new(0, 10, 0, 380))
+local OffsetSlider = CreateSlider(RightPanel, "Offset Factor", 0.1, 2, 0.5, UDim2.new(0, 10, 0, 430))
+local MovementSlider = CreateSlider(RightPanel, "Movement Duration", 0.1, 2, 0.8, UDim2.new(0, 10, 0, 480))
+local ThresholdSlider = CreateSlider(RightPanel, "Generation Threshold", 0.1, 1, 0.3, UDim2.new(0, 10, 0, 530))
+local JumpChanceSlider = CreateSlider(RightPanel, "Jump Chance", 1, 100, 34, UDim2.new(0, 10, 0, 580))
+local DoubleJumpSlider = CreateSlider(RightPanel, "Double Jump Chance", 1, 100, 11, UDim2.new(0, 10, 0, 630))
+
+-- Make the UI draggable
+local UserInputService = game:GetService("UserInputService")
+local dragging
+local dragInput
+local dragStart
+local startPos
+
+local function update(input)
+    local delta = input.Position - dragStart
+    MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+MainFrame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+
+MainFrame.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        update(input)
+    end
+end)
+
+-- Connect the auto parry toggle to the UI
+AutoPlayBtn.MouseButton1Click:Connect(function()
+    IsAutoParryEnabled = not IsAutoParryEnabled
+    if IsAutoParryEnabled then
+        AutoPlayCircle.Position = UDim2.new(0, 22, 0.5, -8)
+        AutoPlayCircle.BackgroundColor3 = Color3.fromRGB(130, 70, 255)
+        AutoPlayBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 70)
+    else
+        AutoPlayCircle.Position = UDim2.new(0, 2, 0.5, -8)
+        AutoPlayCircle.BackgroundColor3 = Color3.fromRGB(200, 200, 200)
+        AutoPlayBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    end
+end)
+
+-- Add a close button
+local CloseButton = Instance.new("TextButton")
+CloseButton.Size = UDim2.new(0, 30, 0, 30)
+CloseButton.Position = UDim2.new(1, -40, 0, 10)
+CloseButton.BackgroundTransparency = 1
+CloseButton.Text = "X"
+CloseButton.TextColor3 = Color3.fromRGB(200, 200, 200)
+CloseButton.TextSize = 20
+CloseButton.Font = Enum.Font.GothamBold
+CloseButton.Parent = MainFrame
+
+CloseButton.MouseButton1Click:Connect(function()
+    ScreenGui:Destroy()
+end)
+
+-- Make the UI visible with a fade-in effect
+MainFrame.BackgroundTransparency = 1
+Sidebar.BackgroundTransparency = 1
+LeftPanel.BackgroundTransparency = 1
+RightPanel.BackgroundTransparency = 1
+
+TweenService:Create(MainFrame, TweenInfo.new(0.5), {BackgroundTransparency = 0.1}):Play()
+TweenService:Create(Sidebar, TweenInfo.new(0.5), {BackgroundTransparency = 0.1}):Play()
+TweenService:Create(LeftPanel, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
+TweenService:Create(RightPanel, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
