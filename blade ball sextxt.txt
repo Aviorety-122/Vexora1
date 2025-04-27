@@ -1,0 +1,1103 @@
+-- Enhanced Blade Ball Auto-Parry Script
+-- All-in-one solution with better curve detection and UI
+
+-- Mock environment for testing outside Roblox
+if not game then
+    print("Creating mock environment for testing purposes")
+    game = {
+        GetService = function(_, serviceName)
+            return {
+                PreSimulation = {
+                    Connect = function() return {Disconnect = function() end} end
+                },
+                LocalPlayer = {
+                    Character = {
+                        HumanoidRootPart = {Position = {X=0, Y=0, Z=0}}
+                    },
+                    PlayerGui = {},
+                    CharacterAdded = {
+                        Connect = function() end,
+                        Wait = function() return {FindFirstChildOfClass = function() return {} end} end
+                    },
+                    Name = "TestPlayer"
+                },
+                InputBegan = {
+                    Connect = function() end
+                },
+                InputEnded = {
+                    Connect = function() end
+                },
+                InputChanged = {
+                    Connect = function() end
+                },
+                GetLastInputType = function() return "Keyboard" end,
+                GetMouseLocation = function() return {X = 500, Y = 500} end,
+                Remotes = {
+                    ParryButtonPress = {
+                        Fire = function() print("Parry button pressed") end
+                    },
+                    ParrySuccess = {
+                        OnClientEvent = {
+                            Connect = function() end
+                        }
+                    },
+                    ParrySuccessAll = {
+                        OnClientEvent = {
+                            Connect = function() end
+                        }
+                    }
+                },
+                SetCore = function() end,
+                WorldToScreenPoint = function() return {X = 500, Y = 500, Z = 0} end,
+                Network = {
+                    ServerStatsItem = {
+                        ['Data Ping'] = { GetValue = function() return 100 end }
+                    }
+                }
+            }
+        end,
+        HttpGet = function() return "" end
+    }
+    
+    workspace = {
+        CurrentCamera = {
+            CFrame = {
+                Position = {X=0, Y=5, Z=0},
+                LookVector = {X=0, Y=0, Z=1},
+                UpVector = {X=0, Y=1, Z=0},
+                RightVector = {X=1, Y=0, Z=0}
+            },
+            ViewportSize = {X = 1920, Y = 1080}
+        },
+        Balls = {
+            GetChildren = function() return {} end,
+            ChildAdded = {
+                Connect = function() end
+            },
+            WaitForChild = function() return {GetChildren = function() return {} end, ChildAdded = {Connect = function() end}} end
+        },
+        Alive = {
+            GetChildren = function() return {} end,
+            WaitForChild = function() return {GetChildren = function() return {} end} end
+        },
+        WaitForChild = function(_, name)
+            if name == "Balls" then return workspace.Balls end
+            if name == "Alive" then return workspace.Alive end
+            return {}
+        end
+    }
+    
+    -- Define Vector3 for testing
+    Vector3 = {
+        new = function(x,y,z) return {
+            x=x, y=y, z=z, 
+            Magnitude=math.sqrt(x*x+y*y+z*z), 
+            Unit={
+                X=x/(math.sqrt(x*x+y*y+z*z) + 0.0001),
+                Y=y/(math.sqrt(x*x+y*y+z*z) + 0.0001),
+                Z=z/(math.sqrt(x*x+y*y+z*z) + 0.0001),
+                Magnitude=1,
+                Dot=function() return 0.9 end
+            },
+            Dot=function() return 0.9 end
+        } end
+    }
+    
+    -- Mock CFrame
+    CFrame = {
+        new = function() return {Position = {X=0, Y=5, Z=0}} end
+    }
+    
+    -- Mock Enum
+    Enum = {
+        ZIndexBehavior = {Sibling = 0},
+        Font = {Gotham = 0, GothamBold = 1},
+        UserInputType = {
+            MouseButton1 = "MouseButton1",
+            MouseButton2 = "MouseButton2",
+            Keyboard = "Keyboard",
+            MouseMovement = "MouseMovement"
+        },
+        TextXAlignment = {Left = 0},
+        EasingStyle = {Quad = 0},
+        EasingDirection = {Out = 0}
+    }
+    
+    -- Mock Color3
+    Color3 = {
+        fromRGB = function(r,g,b) return {r=r/255, g=g/255, b=b/255} end,
+        fromHSV = function(h,s,v) return {h=h, s=s, v=v} end
+    }
+    
+    -- Mock UDim2
+    UDim2 = {
+        new = function(x,xp,y,yp) return {
+            X=x, XOffset=xp, Y=y, YOffset=yp,
+            AbsolutePosition = {X = 100, Y = 100},
+            AbsoluteSize = {X = 100, Y = 20}
+        } end
+    }
+    
+    -- Mock Instance
+    Instance = {
+        new = function(className)
+            return {
+                Name = "",
+                ClassName = className,
+                Size = UDim2.new(0,0,0,0),
+                Position = UDim2.new(0,0,0,0),
+                BackgroundColor3 = Color3.fromRGB(255,255,255),
+                TextColor3 = Color3.fromRGB(0,0,0),
+                BorderSizePixel = 0,
+                Text = "",
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                TextTransparency = 0,
+                BackgroundTransparency = 0,
+                Visible = true,
+                Active = false,
+                Draggable = false,
+                Parent = nil,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                MouseButton1Down = {
+                    Connect = function() return {Disconnect = function() end} end
+                },
+                MouseEnter = {
+                    Connect = function() return {Disconnect = function() end} end
+                },
+                MouseLeave = {
+                    Connect = function() return {Disconnect = function() end} end
+                },
+                MouseButton1Click = {
+                    Connect = function() return {Disconnect = function() end} end
+                },
+                InputBegan = {
+                    Connect = function() return {Disconnect = function() end} end
+                },
+                GetChildren = function() return {} end,
+                Destroy = function() end,
+                FindFirstChild = function() return nil end,
+                GetAttributeChangedSignal = function() return {Connect = function() return {Disconnect = function() end} end} end,
+                GetAttribute = function() return false end
+            }
+        end
+    }
+    
+    -- Mock TweenService
+    TweenService = {
+        Create = function() 
+            return {
+                Play = function() end
+            }
+        end
+    }
+    
+    -- Mock TweenInfo
+    TweenInfo = {
+        new = function() return {} end
+    }
+    
+    -- Mock ColorSequence
+    ColorSequence = {
+        new = function() return {} end
+    }
+    
+    -- Mock ColorSequenceKeypoint
+    ColorSequenceKeypoint = {
+        new = function() return {} end
+    }
+    
+    -- Other required globals
+    math = math or {}
+    math.clamp = function(x, min, max) return math.min(math.max(x, min), max) end
+    math.random = function(min, max) return min + (max-min)/2 end
+    
+    task = {
+        spawn = function(f) f() end,
+        wait = function() end,
+        delay = function(_, f) f() end
+    }
+    
+    table = table or {}
+    table.insert = table.insert or function(t, v) t[#t+1] = v end
+    table.remove = table.remove or function(t, i) t[i or #t] = nil end
+    
+    getgc = function() return {} end
+    islclosure = function() return false end
+    debug = {
+        getupvalues = function() return {} end,
+        getprotos = function() return {} end,
+        getconstants = function() return {} end,
+        getupvalue = function() return nil end,
+        getconstant = function() return nil end
+    }
+    
+    os = os or {}
+    os.clock = function() return os.time() end
+    
+    tick = function() return os.time() end
+    
+    print("Mock environment created")
+end
+
+-- Services
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local StarterGui = game:GetService("StarterGui")
+
+-- Local Player Variables
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character
+-- Handle possible nil values in test environment
+local Humanoid, HumanoidRootPart
+
+pcall(function()
+    if Character then
+        Humanoid = Character:FindFirstChildOfClass("Humanoid") or {}
+        HumanoidRootPart = Character:WaitForChild("HumanoidRootPart") or {Position = Vector3.new(0, 0, 0)}
+    else
+        Humanoid = {}
+        HumanoidRootPart = {Position = Vector3.new(0, 0, 0)}
+    end
+end)
+local Camera = workspace.CurrentCamera
+local Balls = workspace:WaitForChild("Balls")
+local Alive = workspace:WaitForChild("Alive")
+
+-- Input tracking
+local Last_Input = UserInputService:GetLastInputType()
+
+-- Auto-Parry Configuration
+local IsAutoParryEnabled = false
+local ParryRadius = 15
+local BasePredictionTime = 0.1 -- Base prediction time
+local PredictionTime = BasePredictionTime
+local AutoParryMode = "Advanced" -- Options: Advanced, Aggressive, Conservative
+local CurveMode = "Auto" -- Options: Auto, Custom, Backwards, Random, Straight, Up, Right, Left
+local Cooldown = 0
+local LastParryTime = 0
+local IsParried = false
+local DebugMode = false
+
+-- UI Elements
+local AutoParryGui
+local AutoParryFrame
+local AutoParryButton
+local ParryModeButton
+local CurveModeButton
+local StatsLabel
+local DistanceLabel
+local StatusLabel
+local RadiusSlider
+local PredictionSlider
+
+-- Ball Tracking Variables
+local BallSpeed = 0
+local BallDistance = 0
+local LastBallPosition = Vector3.new(0, 0, 0)
+local LastBallVelocity = Vector3.new(0, 0, 0)
+local PreviousVelocities = {}
+local MaxVelocitySamples = 10
+local BallHistory = {}
+local MaxBallHistory = 20
+
+-- Stats
+local SuccessfulParries = 0
+local FailedParries = 0
+
+-- Get remote events for parry
+local Remotes = {}
+local Parry_Key = nil
+local Parry_Data = nil
+local Connection = nil
+
+-- Setup player character added connection
+LocalPlayer.CharacterAdded:Connect(function(NewCharacter)
+    Character = NewCharacter
+    Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+end)
+
+-- Find the necessary remotes and key using closure scanning
+task.spawn(function()
+    for _, Value in pairs(getgc()) do
+        if type(Value) == "function" and islclosure(Value) then
+            if debug.getupvalues(Value) then
+                local Protos = debug.getprotos(Value)
+                local Upvalues = debug.getupvalues(Value)
+                local Constants = debug.getconstants(Value)
+                if #Protos == 4 and #Upvalues == 24 and #Constants == 104 then
+                    Remotes[debug.getupvalue(Value, 16)] = debug.getconstant(Value, 62)
+                    Parry_Key = debug.getupvalue(Value, 17)
+                    Remotes[debug.getupvalue(Value, 18)] = debug.getconstant(Value, 64)
+                    Remotes[debug.getupvalue(Value, 19)] = debug.getconstant(Value, 65)
+                    if DebugMode then
+                        print("Found parry remotes and key")
+                    end
+                    -- Initialize parry data with camera information
+                    UpdateParryData(CurveMode)
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- Utility Functions
+local function GetBall()
+    for _, Ball in ipairs(Balls:GetChildren()) do
+        if Ball:GetAttribute("realBall") then
+            return Ball
+        end
+    end
+    return nil
+end
+
+local function GetClosestPlayer()
+    local ClosestEntity = nil
+    local MaxDistance = math.huge
+    for _, Entity in pairs(Alive:GetChildren()) do
+        if Entity ~= Character and Entity:FindFirstChild("HumanoidRootPart") then
+            local Distance = (HumanoidRootPart.Position - Entity.HumanoidRootPart.Position).Magnitude
+            if Distance < MaxDistance then
+                MaxDistance = Distance
+                ClosestEntity = Entity
+            end
+        end
+    end
+    return ClosestEntity, MaxDistance
+end
+
+local function ResetConnection()
+    if Connection then
+        Connection:Disconnect()
+        Connection = nil
+    end
+end
+
+-- Track balls through attribute changes
+Balls.ChildAdded:Connect(function()
+    local Ball = GetBall()
+    if not Ball then return end
+    
+    ResetConnection()
+    
+    Connection = Ball:GetAttributeChangedSignal("target"):Connect(function()
+        IsParried = false
+    end)
+end)
+
+-- Function to update parry data based on selected curve type
+function UpdateParryData(curveType)
+    if not Camera then return end
+    
+    local Vector3_Mouse_Location
+    if Last_Input == Enum.UserInputType.MouseButton1 or 
+       Last_Input == Enum.UserInputType.MouseButton2 or 
+       Last_Input == Enum.UserInputType.Keyboard then
+        local Mouse_Location = UserInputService:GetMouseLocation()
+        Vector3_Mouse_Location = {Mouse_Location.X, Mouse_Location.Y}
+    else
+        Vector3_Mouse_Location = {Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2}
+    end
+    
+    local Events = {}
+    for _, v in pairs(Alive:GetChildren()) do
+        if v:FindFirstChild("PrimaryPart") then
+            Events[tostring(v)] = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
+        end
+    end
+
+    local data = nil
+    if curveType == "Custom" then
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}
+    elseif curveType == "Backwards" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif curveType == "Random" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Vector3.new(math.random(-3000,3000), math.random(-3000,3000), math.random(-3000,3000))), Events, Vector3_Mouse_Location}
+    elseif curveType == "Straight" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif curveType == "Up" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.UpVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif curveType == "Right" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif curveType == "Left" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}
+    else -- Auto (default)
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}
+    end
+
+    Parry_Data = data
+end
+
+local function CalculateAverage(t)
+    local sum = 0
+    for _, v in ipairs(t) do
+        sum = sum + v
+    end
+    return sum / #t
+end
+
+local function CanParry()
+    return os.clock() - LastParryTime > Cooldown
+end
+
+local function Parry()
+    if not Parry_Key or not CanParry() or not Parry_Data then return false end
+    
+    LastParryTime = os.clock()
+    IsParried = true
+    
+    -- Update parry data before parrying
+    UpdateParryData(CurveMode)
+    
+    -- Fire the parry remote
+    ReplicatedStorage.Remotes.ParryButtonPress:Fire()
+    
+    -- Fire all related remote events
+    for Remote, RemoteKey in pairs(Remotes) do
+        if RemoteKey == "Fire" then
+            Remote:Fire(Parry_Key)
+        elseif RemoteKey == "FireServer" then
+            Remote:FireServer(Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])
+        end
+    end
+    
+    SuccessfulParries = SuccessfulParries + 1
+    if StatusLabel then
+        StatusLabel.Text = "Status: Parried!"
+    end
+    
+    task.delay(1, function()
+        if StatusLabel and StatusLabel.Text == "Status: Parried!" then
+            StatusLabel.Text = "Status: " .. (IsAutoParryEnabled and "Active" or "Inactive")
+        end
+    end)
+    
+    return true
+end
+
+-- Enhanced curve detection
+local function IsCurved()
+    local Ball = GetBall()
+    if not Ball or not Character or not Character:FindFirstChild("HumanoidRootPart") then
+        return false
+    end
+
+    local Zoomies = Ball:FindFirstChild("zoomies")  
+    if not Zoomies then  
+        return false  
+    end  
+
+    local Ping = game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue() / 1000  
+    local Velocity = Zoomies.VectorVelocity  
+    local BallDirection = Velocity.Unit  
+    local HRP = Character.HumanoidRootPart  
+    local Direction = (HRP.Position - Ball.Position).Unit  
+    local Dot = Direction:Dot(BallDirection)  
+    local Speed = Velocity.Magnitude  
+    local Distance = (HRP.Position - Ball.Position).Magnitude  
+
+    -- Enhanced detection parameters - tune these for better curve detection
+    return Dot < 0.95 and Distance < 50 and Speed > 10
+end
+
+-- Advanced ball position prediction with curve adjustment
+local function PredictBallPosition(Ball, TimeAhead)
+    if not Ball then return Vector3.new(0, 0, 0) end
+    
+    local Velocity = (Ball:FindFirstChild("zoomies") and Ball.zoomies.VectorVelocity) or Vector3.new(0, 0, 0)
+    
+    -- Basic linear prediction
+    local BasicPrediction = Ball.Position + Velocity * TimeAhead
+    
+    -- Get ball history (if available)
+    if #BallHistory >= 3 then
+        -- Calculate acceleration based on historical positions
+        local CurrentVelocity = Velocity.Magnitude
+        local PrevVelocity = BallHistory[#BallHistory].Velocity.Magnitude
+        local Acceleration = (CurrentVelocity - PrevVelocity) / 0.1 -- Assuming 0.1s between samples
+        
+        -- Calculate direction change
+        local CurrentDirection = Velocity.Unit
+        local PrevDirection = BallHistory[#BallHistory].Velocity.Unit
+        local DirectionChange = (CurrentDirection - PrevDirection).Magnitude
+        
+        -- If there's significant direction change (curve detected)
+        if DirectionChange > 0.1 or IsCurved() then
+            -- Apply curve adjustment
+            local CurveIntensity = math.min(DirectionChange * 10, 1)
+            local TargetPositionDifference = (HumanoidRootPart.Position - Ball.Position)
+            local CurveAdjustment = TargetPositionDifference.Unit * CurveIntensity * Velocity.Magnitude * TimeAhead * 0.5
+            
+            return BasicPrediction + CurveAdjustment
+        end
+        
+        -- Apply acceleration adjustment
+        local AccelerationFactor = 0.5 * Acceleration * TimeAhead * TimeAhead
+        local AccelerationAdjustment = Velocity.Unit * AccelerationFactor
+        
+        return BasicPrediction + AccelerationAdjustment
+    end
+    
+    return BasicPrediction
+end
+
+-- Function to adjust prediction time based on ball speed and distance
+local function AdjustPredictionTime(speed, distance)
+    -- Dynamic prediction based on ball speed
+    local adjustedTime = BasePredictionTime
+    
+    if speed < 250 then
+        adjustedTime = BasePredictionTime + 0.05
+    elseif speed > 500 then
+        adjustedTime = BasePredictionTime - 0.03
+    end
+    
+    -- Adjust based on distance
+    if distance < 10 then
+        adjustedTime = adjustedTime - 0.02
+    elseif distance > 30 then
+        adjustedTime = adjustedTime + 0.02
+    end
+    
+    -- Adjust based on auto parry mode
+    if AutoParryMode == "Aggressive" then
+        adjustedTime = adjustedTime - 0.02
+    elseif AutoParryMode == "Conservative" then
+        adjustedTime = adjustedTime + 0.02
+    end
+    
+    -- Additional adjustment for curved balls
+    if IsCurved() then
+        adjustedTime = adjustedTime - 0.01
+    end
+    
+    return math.clamp(adjustedTime, 0.03, 0.15)
+end
+
+-- Function to check if ball is approaching the player
+local function IsBallApproaching(ball, ballVelocity)
+    if not ball or not HumanoidRootPart then return false end
+    
+    local ballToPlayer = (HumanoidRootPart.Position - ball.Position).Unit
+    local ballDirection = ballVelocity.Unit
+    
+    -- Calculate dot product to see if the ball is moving toward the player
+    local dotProduct = ballToPlayer:Dot(ballDirection)
+    
+    -- If the dot product is positive, the ball is moving toward the player
+    -- With a more aggressive threshold for detection
+    return dotProduct > 0.65
+end
+
+-- Toggle auto parry
+local function ToggleAutoParry()
+    IsAutoParryEnabled = not IsAutoParryEnabled
+    
+    -- Update UI text
+    if AutoParryButton then
+        AutoParryButton.Text = "Auto Parry: " .. (IsAutoParryEnabled and "ON" or "OFF")
+    end
+    if StatusLabel then
+        StatusLabel.Text = "Status: " .. (IsAutoParryEnabled and "Active" or "Inactive")
+    end
+end
+
+-- Cycle through parry modes
+local function CycleParryMode()
+    if AutoParryMode == "Advanced" then
+        AutoParryMode = "Aggressive"
+    elseif AutoParryMode == "Aggressive" then
+        AutoParryMode = "Conservative"
+    else
+        AutoParryMode = "Advanced"
+    end
+    
+    -- Update UI text
+    if ParryModeButton then
+        ParryModeButton.Text = "Mode: " .. AutoParryMode
+    end
+end
+
+-- Cycle through curve modes
+local function CycleCurveMode()
+    local modes = {"Auto", "Custom", "Backwards", "Straight", "Random", "Up", "Right", "Left"}
+    
+    -- Find current index
+    local currentIndex = 1
+    for i, mode in ipairs(modes) do
+        if mode == CurveMode then
+            currentIndex = i
+            break
+        end
+    end
+    
+    -- Cycle to next mode
+    currentIndex = currentIndex % #modes + 1
+    CurveMode = modes[currentIndex]
+    
+    -- Update parry data for new curve mode
+    UpdateParryData(CurveMode)
+    
+    -- Update UI text
+    if CurveModeButton then
+        CurveModeButton.Text = "Curve: " .. CurveMode
+    end
+end
+
+-- Set parry radius
+local function SetParryRadius(value)
+    ParryRadius = value
+    
+    -- Update UI text
+    if DistanceLabel then
+        DistanceLabel.Text = "Parry Radius: " .. ParryRadius
+    end
+end
+
+-- Set prediction time
+local function SetPredictionTime(value)
+    BasePredictionTime = value
+    
+    -- Update UI text
+    if PredictionSlider then
+        PredictionSlider.Value = BasePredictionTime
+    end
+end
+
+-- Main auto parry logic
+local function StartAutoParry()
+    RunService.PreSimulation:Connect(function()
+        if not IsAutoParryEnabled then return end
+        if not Parry_Key then return end
+        if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+        
+        local Ball = GetBall()
+        if not Ball then return end
+        
+        -- Check if the ball is targeting the local player
+        if Ball:GetAttribute("target") == LocalPlayer.Name and not IsParried then
+            local BallVelocity = (Ball:FindFirstChild("zoomies") and Ball.zoomies.VectorVelocity) or Ball.Velocity
+            local CurrentBallPosition = Ball.Position
+            BallSpeed = BallVelocity.Magnitude
+            
+            -- Track velocity samples for better prediction
+            table.insert(PreviousVelocities, BallVelocity)
+            if #PreviousVelocities > MaxVelocitySamples then
+                table.remove(PreviousVelocities, 1)
+            end
+            
+            -- Record ball history for curve detection
+            table.insert(BallHistory, {
+                Position = CurrentBallPosition,
+                Velocity = BallVelocity,
+                Time = tick()
+            })
+            
+            if #BallHistory > MaxBallHistory then
+                table.remove(BallHistory, 1)
+            end
+            
+            -- Calculate average velocity for more stable prediction
+            local AverageVelocity = Vector3.new(0, 0, 0)
+            for _, velocity in ipairs(PreviousVelocities) do
+                AverageVelocity = AverageVelocity + velocity
+            end
+            AverageVelocity = AverageVelocity / #PreviousVelocities
+            
+            -- Calculate distance from player to ball
+            BallDistance = (HumanoidRootPart.Position - CurrentBallPosition).Magnitude
+            
+            -- Update stats text if UI exists
+            if StatsLabel then
+                StatsLabel.Text = "Parries: " .. SuccessfulParries .. " | Speed: " .. math.floor(BallSpeed)
+            end
+            
+            if DistanceLabel then
+                DistanceLabel.Text = "Distance: " .. math.floor(BallDistance) .. " | Radius: " .. ParryRadius
+            end
+            
+            -- Update ball position for next frame
+            LastBallPosition = CurrentBallPosition
+            LastBallVelocity = BallVelocity
+            
+            -- Adjust prediction time based on ball speed and distance
+            local adjustedPredictionTime = AdjustPredictionTime(BallSpeed, BallDistance)
+            PredictionTime = adjustedPredictionTime
+            
+            -- Check if ball is within parry radius
+            if BallDistance <= ParryRadius and CanParry() then
+                -- Use advanced prediction to determine if parry is needed
+                local PredictedPosition = PredictBallPosition(Ball, PredictionTime)
+                local PredictedDistance = (HumanoidRootPart.Position - PredictedPosition).Magnitude
+                
+                -- If the ball will be in parry range soon, attempt to parry
+                if PredictedDistance <= ParryRadius then
+                    Parry()
+                end
+            end
+        end
+    end)
+end
+
+-- Create Enhanced UI
+local function CreateEnhancedUI()
+    -- Create ScreenGui
+    AutoParryGui = Instance.new("ScreenGui")
+    AutoParryGui.Name = "EnhancedAutoParryGui"
+    AutoParryGui.ResetOnSpawn = false
+    AutoParryGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    AutoParryGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    
+    -- Create main container frame
+    AutoParryFrame = Instance.new("Frame")
+    AutoParryFrame.Name = "MainFrame"
+    AutoParryFrame.Size = UDim2.new(0, 250, 0, 340)
+    AutoParryFrame.Position = UDim2.new(0.85, -125, 0.5, -170)
+    AutoParryFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    AutoParryFrame.BorderSizePixel = 0
+    AutoParryFrame.Active = true
+    AutoParryFrame.Draggable = true
+    AutoParryFrame.Parent = AutoParryGui
+    
+    -- Add a border outline to the frame
+    local Border = Instance.new("Frame")
+    Border.Name = "Border"
+    Border.Size = UDim2.new(1, 2, 1, 2)
+    Border.Position = UDim2.new(0, -1, 0, -1)
+    Border.BackgroundColor3 = Color3.fromRGB(140, 70, 255)
+    Border.BorderSizePixel = 0
+    Border.ZIndex = 0
+    Border.Parent = AutoParryFrame
+    
+    -- Create title bar
+    local TitleBar = Instance.new("Frame")
+    TitleBar.Name = "TitleBar"
+    TitleBar.Size = UDim2.new(1, 0, 0, 30)
+    TitleBar.Position = UDim2.new(0, 0, 0, 0)
+    TitleBar.BackgroundColor3 = Color3.fromRGB(140, 70, 255)
+    TitleBar.BorderSizePixel = 0
+    TitleBar.Parent = AutoParryFrame
+    
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Name = "TitleLabel"
+    TitleLabel.Size = UDim2.new(1, 0, 1, 0)
+    TitleLabel.Position = UDim2.new(0, 0, 0, 0)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = "Enhanced Auto Parry"
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleLabel.TextSize = 16
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.Parent = TitleBar
+    
+    -- Create status indicators section
+    local StatusSection = Instance.new("Frame")
+    StatusSection.Name = "StatusSection"
+    StatusSection.Size = UDim2.new(1, -20, 0, 70)
+    StatusSection.Position = UDim2.new(0, 10, 0, 40)
+    StatusSection.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    StatusSection.BorderSizePixel = 0
+    StatusSection.Parent = AutoParryFrame
+    
+    StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Name = "StatusLabel"
+    StatusLabel.Size = UDim2.new(1, 0, 0, 20)
+    StatusLabel.Position = UDim2.new(0, 0, 0, 5)
+    StatusLabel.BackgroundTransparency = 1
+    StatusLabel.Text = "Status: Inactive"
+    StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StatusLabel.TextSize = 14
+    StatusLabel.Font = Enum.Font.Gotham
+    StatusLabel.Parent = StatusSection
+    
+    StatsLabel = Instance.new("TextLabel")
+    StatsLabel.Name = "StatsLabel"
+    StatsLabel.Size = UDim2.new(1, 0, 0, 20)
+    StatsLabel.Position = UDim2.new(0, 0, 0, 25)
+    StatsLabel.BackgroundTransparency = 1
+    StatsLabel.Text = "Parries: 0 | Speed: 0"
+    StatsLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StatsLabel.TextSize = 14
+    StatsLabel.Font = Enum.Font.Gotham
+    StatsLabel.Parent = StatusSection
+    
+    DistanceLabel = Instance.new("TextLabel")
+    DistanceLabel.Name = "DistanceLabel"
+    DistanceLabel.Size = UDim2.new(1, 0, 0, 20)
+    DistanceLabel.Position = UDim2.new(0, 0, 0, 45)
+    DistanceLabel.BackgroundTransparency = 1
+    DistanceLabel.Text = "Distance: 0 | Radius: " .. ParryRadius
+    DistanceLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    DistanceLabel.TextSize = 14
+    DistanceLabel.Font = Enum.Font.Gotham
+    DistanceLabel.Parent = StatusSection
+    
+    -- Create controls section
+    local ControlsSection = Instance.new("Frame")
+    ControlsSection.Name = "ControlsSection"
+    ControlsSection.Size = UDim2.new(1, -20, 0, 140)
+    ControlsSection.Position = UDim2.new(0, 10, 0, 120)
+    ControlsSection.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    ControlsSection.BorderSizePixel = 0
+    ControlsSection.Parent = AutoParryFrame
+    
+    -- Control buttons
+    local function CreateButton(name, text, position, callback)
+        local button = Instance.new("TextButton")
+        button.Name = name
+        button.Size = UDim2.new(1, -20, 0, 30)
+        button.Position = position
+        button.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+        button.BorderSizePixel = 0
+        button.Text = text
+        button.TextColor3 = Color3.fromRGB(255, 255, 255)
+        button.TextSize = 14
+        button.Font = Enum.Font.Gotham
+        button.Parent = ControlsSection
+        button.MouseButton1Click:Connect(callback)
+        
+        -- Add hover effect
+        button.MouseEnter:Connect(function()
+            button.BackgroundColor3 = Color3.fromRGB(60, 60, 90)
+        end)
+        
+        button.MouseLeave:Connect(function()
+            button.BackgroundColor3 = Color3.fromRGB(50, 50, 70)
+        end)
+        
+        return button
+    end
+    
+    AutoParryButton = CreateButton(
+        "AutoParryButton", 
+        "Auto Parry: OFF", 
+        UDim2.new(0, 10, 0, 10), 
+        ToggleAutoParry
+    )
+    
+    ParryModeButton = CreateButton(
+        "ParryModeButton", 
+        "Mode: " .. AutoParryMode, 
+        UDim2.new(0, 10, 0, 50), 
+        CycleParryMode
+    )
+    
+    CurveModeButton = CreateButton(
+        "CurveModeButton", 
+        "Curve: " .. CurveMode, 
+        UDim2.new(0, 10, 0, 90), 
+        CycleCurveMode
+    )
+    
+    -- Create sliders section
+    local SlidersSection = Instance.new("Frame")
+    SlidersSection.Name = "SlidersSection"
+    SlidersSection.Size = UDim2.new(1, -20, 0, 100)
+    SlidersSection.Position = UDim2.new(0, 10, 0, 270)
+    SlidersSection.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    SlidersSection.BorderSizePixel = 0
+    SlidersSection.Parent = AutoParryFrame
+    
+    -- Create slider function
+    local function CreateSlider(name, text, min, max, defaultValue, position, callback)
+        local sliderContainer = Instance.new("Frame")
+        sliderContainer.Name = name .. "Container"
+        sliderContainer.Size = UDim2.new(1, -20, 0, 40)
+        sliderContainer.Position = position
+        sliderContainer.BackgroundTransparency = 1
+        sliderContainer.Parent = SlidersSection
+        
+        local sliderLabel = Instance.new("TextLabel")
+        sliderLabel.Name = "Label"
+        sliderLabel.Size = UDim2.new(1, 0, 0, 20)
+        sliderLabel.Position = UDim2.new(0, 0, 0, 0)
+        sliderLabel.BackgroundTransparency = 1
+        sliderLabel.Text = text .. ": " .. defaultValue
+        sliderLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        sliderLabel.TextSize = 14
+        sliderLabel.Font = Enum.Font.Gotham
+        sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+        sliderLabel.Parent = sliderContainer
+        
+        local sliderBack = Instance.new("Frame")
+        sliderBack.Name = "Back"
+        sliderBack.Size = UDim2.new(1, 0, 0, 6)
+        sliderBack.Position = UDim2.new(0, 0, 0, 25)
+        sliderBack.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+        sliderBack.BorderSizePixel = 0
+        sliderBack.Parent = sliderContainer
+        
+        local sliderFill = Instance.new("Frame")
+        sliderFill.Name = "Fill"
+        sliderFill.Size = UDim2.new((defaultValue - min) / (max - min), 0, 1, 0)
+        sliderFill.Position = UDim2.new(0, 0, 0, 0)
+        sliderFill.BackgroundColor3 = Color3.fromRGB(140, 70, 255)
+        sliderFill.BorderSizePixel = 0
+        sliderFill.Parent = sliderBack
+        
+        local sliderButton = Instance.new("TextButton")
+        sliderButton.Name = "Button"
+        sliderButton.Size = UDim2.new(0, 12, 0, 12)
+        sliderButton.Position = UDim2.new((defaultValue - min) / (max - min), -6, 0, -3)
+        sliderButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+        sliderButton.BorderSizePixel = 0
+        sliderButton.Text = ""
+        sliderButton.Parent = sliderBack
+        
+        -- Slider interaction
+        local isDragging = false
+        
+        sliderButton.MouseButton1Down:Connect(function()
+            isDragging = true
+        end)
+        
+        UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                isDragging = false
+            end
+        end)
+        
+        sliderBack.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                isDragging = true
+                
+                -- Calculate value based on click position
+                local mousePos = UserInputService:GetMouseLocation().X
+                local sliderPos = sliderBack.AbsolutePosition.X
+                local sliderSize = sliderBack.AbsoluteSize.X
+                
+                local relativePos = math.clamp((mousePos - sliderPos) / sliderSize, 0, 1)
+                local newValue = min + relativePos * (max - min)
+                
+                -- Update slider visuals
+                sliderFill.Size = UDim2.new(relativePos, 0, 1, 0)
+                sliderButton.Position = UDim2.new(relativePos, -6, 0, -3)
+                
+                -- Update text and callback
+                sliderLabel.Text = text .. ": " .. string.format("%.3f", newValue)
+                callback(newValue)
+            end
+        end)
+        
+        UserInputService.InputChanged:Connect(function(input)
+            if isDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+                -- Calculate value based on drag position
+                local mousePos = UserInputService:GetMouseLocation().X
+                local sliderPos = sliderBack.AbsolutePosition.X
+                local sliderSize = sliderBack.AbsoluteSize.X
+                
+                local relativePos = math.clamp((mousePos - sliderPos) / sliderSize, 0, 1)
+                local newValue = min + relativePos * (max - min)
+                
+                -- Update slider visuals
+                sliderFill.Size = UDim2.new(relativePos, 0, 1, 0)
+                sliderButton.Position = UDim2.new(relativePos, -6, 0, -3)
+                
+                -- Update text and callback
+                sliderLabel.Text = text .. ": " .. string.format("%.3f", newValue)
+                callback(newValue)
+            end
+        end)
+        
+        -- Keep reference to update later
+        local slider = {
+            Label = sliderLabel,
+            Fill = sliderFill,
+            Button = sliderButton,
+            Value = defaultValue,
+            Min = min,
+            Max = max,
+            
+            -- Method to update slider programmatically
+            SetValue = function(self, value)
+                local clampedValue = math.clamp(value, min, max)
+                local relativePos = (clampedValue - min) / (max - min)
+                
+                self.Fill.Size = UDim2.new(relativePos, 0, 1, 0)
+                self.Button.Position = UDim2.new(relativePos, -6, 0, -3)
+                self.Label.Text = text .. ": " .. string.format("%.3f", clampedValue)
+                self.Value = clampedValue
+                
+                callback(clampedValue)
+            end
+        }
+        
+        return slider
+    end
+    
+    -- Create radius slider
+    local radiusSlider = CreateSlider(
+        "RadiusSlider",
+        "Parry Radius",
+        5, 30, ParryRadius,
+        UDim2.new(0, 10, 0, 5),
+        SetParryRadius
+    )
+    
+    -- Create prediction slider
+    PredictionSlider = CreateSlider(
+        "PredictionSlider",
+        "Prediction Time",
+        0.03, 0.15, BasePredictionTime,
+        UDim2.new(0, 10, 0, 55),
+        SetPredictionTime
+    )
+    
+    -- Add created animations
+    local function CreateGradientEffect(parent)
+        local uiGradient = Instance.new("UIGradient")
+        uiGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(140, 70, 255)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(80, 30, 170))
+        })
+        uiGradient.Rotation = 45
+        uiGradient.Parent = parent
+    end
+    
+    -- Add gradients
+    CreateGradientEffect(TitleBar)
+    CreateGradientEffect(Border)
+    
+    -- Apply subtle fade animation to status labels
+    local labelFadeIn = function(obj)
+        obj.TextTransparency = 0.5
+        local tween = game:GetService("TweenService"):Create(
+            obj,
+            TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            {TextTransparency = 0}
+        )
+        tween:Play()
+    end
+    
+    labelFadeIn(StatusLabel)
+    labelFadeIn(StatsLabel)
+    labelFadeIn(DistanceLabel)
+    
+    return AutoParryGui
+end
+
+-- Initialize and start everything
+local function Initialize()
+    -- Create UI
+    local UI = CreateEnhancedUI()
+    
+    -- Start auto parry
+    StartAutoParry()
+    
+    -- Send notification
+    StarterGui:SetCore("SendNotification", {
+        Title = "Enhanced Auto Parry",
+        Text = "Script loaded successfully! Use the UI to configure.",
+        Duration = 5
+    })
+    
+    print("Enhanced Auto Parry loaded.")
+    print("Use the UI to control the auto parry functionality.")
+end
+
+-- Start the script
+Initialize()
