@@ -1,0 +1,1544 @@
+-- Vexora Premium - Enhanced Ball Parry Script
+-- Advanced Auto-Parry with Curve Detection and Premium UI
+
+print("Running Vexora Premium outside Roblox environment")
+print("This is a test run to check for syntax errors")
+
+-- Create mock Roblox environment
+-- This allows the script to run in a standalone Lua environment
+local function createMockRobloxEnv()
+    -- Mock color functions
+    _G.Color3 = {
+        fromRGB = function(r, g, b)
+            return {r = r, g = g, b = b}
+        end
+    }
+    
+    -- Mock Enum
+    _G.Enum = {
+        UserInputType = {
+            MouseButton1 = "MouseButton1",
+            MouseButton2 = "MouseButton2",
+            Keyboard = "Keyboard"
+        }
+    }
+    
+    -- Mock Instance
+    _G.Instance = {
+        new = function(className)
+            return {
+                Name = "",
+                ClassName = className,
+                Parent = nil,
+                Destroy = function() end
+            }
+        end
+    }
+    
+    -- Mock basic Roblox objects
+    _G.game = {
+        HttpGet = function() return "-- Mock Rayfield UI Library" end,
+        GetService = function(_, serviceName)
+            return {
+                PreSimulation = {
+                    Connect = function(_, callback) end
+                },
+                Connect = function(_, callback) end,
+                ChildAdded = {
+                    Connect = function(_, callback) end
+                },
+                CharacterAdded = {
+                    Connect = function(_, callback) end,
+                    Wait = function() return {} end
+                },
+                FindFirstChild = function() return nil end,
+                WaitForChild = function() return {
+                    GetPropertyChangedSignal = function() return {
+                        Connect = function() end
+                    } end
+                } end,
+                WorldToScreenPoint = function() return {X = 0, Y = 0} end
+            }
+        end
+    }
+    
+    -- Mock other required globals
+    _G.tick = function() return os.time() end
+    _G.wait = function(t) if t then os.execute("sleep " .. t) else os.execute("sleep 0.01") end end
+    _G.task = {
+        spawn = function(f) f() end,
+        wait = function() end
+    }
+    _G.getgc = function() return {} end
+    _G.islclosure = function() return false end
+    _G.debug = {
+        getupvalues = function() return {} end,
+        getprotos = function() return {} end,
+        getconstants = function() return {} end,
+        getupvalue = function() return {} end,
+        getconstant = function() return {} end
+    }
+    _G.RaycastParams = {
+        new = function() 
+            return {
+                FilterType = nil,
+                FilterDescendantsInstances = {}
+            }
+        end
+    }
+    
+    -- Define these globally so they're available
+    Color3 = _G.Color3
+    Enum = _G.Enum
+    Instance = _G.Instance
+    task = _G.task
+    getgc = _G.getgc
+    islclosure = _G.islclosure
+    debug = _G.debug
+    RaycastParams = _G.RaycastParams
+end
+
+-- Initialize mock environment
+createMockRobloxEnv()
+
+-- Mock loadstring for testing
+_G.loadstring = function(code)
+    return function()
+        return {
+            CreateWindow = function() return {
+                CreateTab = function() return {
+                    CreateSection = function() end,
+                    CreateToggle = function() return {} end,
+                    CreateDropdown = function() return {} end,
+                    CreateSlider = function() return {} end,
+                    CreateInput = function() return {} end,
+                    CreateColorPicker = function() return {} end,
+                    CreateParagraph = function() return {
+                        Set = function() end
+                    } end
+                } end
+            } end,
+            Notify = function() end,
+            UpdateTheme = function() end,
+            ToggleOldTabStyle = function() end,
+            Dispose = function() end
+        }
+    end
+end
+loadstring = _G.loadstring
+
+-- Services (using mock objects)
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local Debris = game:GetService('Debris')
+local TextChatService = game:GetService("TextChatService")
+local TweenService = game:GetService("TweenService")
+local StarterGui = game:GetService("StarterGui")
+local Lighting = game:GetService("Lighting")
+
+-- Local Player Variables (using mock objects)
+local LocalPlayer = {
+    Name = "TestPlayer",
+    Character = {
+        FindFirstChild = function() return {Position = {X=0, Y=0, Z=0}} end,
+        FindFirstChildOfClass = function() return {
+            Animator = {
+                LoadAnimation = function() return {
+                    Play = function() end,
+                    Stop = function() end
+                } end
+            },
+            Stop = function() end
+        } end
+    },
+    PlayerGui = {
+        WaitForChild = function() return {
+            ChildAdded = {
+                Connect = function() end
+            }
+        } end
+    },
+    CharacterAdded = {
+        Connect = function(_, callback) end,
+        Wait = function() return {
+            FindFirstChild = function() return {Position = {X=0, Y=0, Z=0}} end
+        } end
+    }
+}
+
+-- Setup mock workspace
+_G.workspace = {
+    Alive = {
+        GetChildren = function() return {} end
+    },
+    Balls = {
+        GetChildren = function() return {} end
+    },
+    Map = {},
+    CurrentCamera = {
+        FieldOfView = 70,
+        ViewportSize = {X = 1920, Y = 1080},
+        CFrame = {
+            Position = {X=0, Y=0, Z=0},
+            LookVector = {X=0, Y=0, Z=1},
+            UpVector = {X=0, Y=1, Z=0},
+            RightVector = {X=1, Y=0, Z=0}
+        }
+    },
+    Raycast = function() return nil end
+}
+workspace = _G.workspace
+
+local Humanoid = {
+    Animator = {
+        LoadAnimation = function() return {
+            Play = function() end,
+            Stop = function() end
+        } end
+    }
+}
+local Alive = workspace.Alive
+
+-- Input and Camera Variables
+local Last_Input = Enum.UserInputType.Keyboard
+local Camera = workspace.CurrentCamera
+local DefaultFOV = Camera.FieldOfView
+
+-- Setup vector methods
+_G.Vector3 = {
+    new = function(x, y, z) return {X=x or 0, Y=y or 0, Z=z or 0} end,
+    zero = {X=0, Y=0, Z=0}
+}
+Vector3 = _G.Vector3
+
+-- Parry Configuration Variables
+local Remotes = {}
+local Parry_Key = nil
+local Parry_Data = nil
+local Parry_Type = "Custom"
+local Cooldown = 0
+local IsParried = false
+local Connection = nil
+local IsAutoParryEnabled = false
+local ParryRadius = 15
+local PredictionTime = 0.069 -- Base value, will be adjusted dynamically
+local Parries = 0
+local AutoParryMode = "Advanced" -- Options: Advanced, Aggressive, Conservative
+
+-- Ball Variables
+local BallSpeed = 0
+local BallVelocityVector = Vector3.zero
+local BallDirection = Vector3.zero
+local BallDistance = 0
+local LastBallPosition = Vector3.zero
+local LastBallVelocity = Vector3.zero
+local PreviousVelocities = {}
+local MaxVelocitySamples = 10
+local IsTrackingBall = false
+local BallHistory = {}
+local MaxBallHistory = 20
+local BallPredictionPoints = {}
+local PredictedBallPosition = Vector3.zero
+
+-- Player Stats
+local SuccessfulParries = 0
+local FailedParries = 0
+local TotalBallsParried = 0
+local AverageReactionTime = 0
+local ReactionTimes = {}
+local MaxReactionTimes = 10
+
+-- Animation Variables
+local AnimationStorage = {}
+local CurrentAnimationTrack = nil
+local SelectedEmote = nil
+
+-- UI and Customization Variables
+local UITheme = "Midnight" -- Options: Midnight, Neon, Elegant
+local UIAccentColor = Color3.fromRGB(126, 0, 255) -- Default purple
+local UITransparency = 0.1
+local UIScale = 1
+local NotificationSound = true
+local VisualizeBallPath = false
+local VisualizeParryRadius = false
+local ParryRadiusVisualization = nil
+local ParryVisualizerColor = Color3.fromRGB(0, 255, 0)
+
+-- Player Customization
+local FOVEnabled = false
+local CustomFOV = 70
+local EnableBloom = false
+local EnableMotionBlur = false
+local BloomIntensity = 0.4
+local MotionBlurStrength = 10
+local CustomHitSound = nil
+local CustomParryMessage = "Vexora Premium | Parried!"
+local ChatSpamEnabled = false
+local ChatMessages = {
+    "Vexora on top!",
+    "Parried with Vexora Premium",
+    "Get better lol",
+    "Vexora Premium > All",
+    "Easy parry with Vexora"
+}
+
+-- Performance and Debug
+local DebugMode = false
+local PerformanceMode = false
+local LastParryTime = 0
+local FrameRateOptimization = true
+local LastFrameTime = tick()
+local FrameUpdateRate = 0.01 -- Update visuals every 10ms
+
+-- Load animations from game
+for _, v in pairs(ReplicatedStorage.Misc.Emotes:GetChildren()) do
+    if v:IsA("Animation") and v:GetAttribute("EmoteName") then
+        local EmoteName = v:GetAttribute("EmoteName")
+        AnimationStorage[EmoteName] = v
+    end
+end
+
+local EmoteOptions = {}
+for EmoteName in pairs(AnimationStorage) do
+    table.insert(EmoteOptions, EmoteName)
+end
+table.sort(EmoteOptions)
+
+-- Get remote events for parry
+task.spawn(function()
+    for _, Value in pairs(getgc()) do
+        if type(Value) == "function" and islclosure(Value) then
+            if debug.getupvalues(Value) then
+                local Protos = debug.getprotos(Value)
+                local Upvalues = debug.getupvalues(Value)
+                local Constants = debug.getconstants(Value)
+                if #Protos == 4 and #Upvalues == 24 and #Constants == 104 then
+                    Remotes[debug.getupvalue(Value, 16)] = debug.getconstant(Value, 62)
+                    Parry_Key = debug.getupvalue(Value, 17)
+                    Remotes[debug.getupvalue(Value, 18)] = debug.getconstant(Value, 64)
+                    Remotes[debug.getupvalue(Value, 19)] = debug.getconstant(Value, 65)
+                    if DebugMode then
+                        print("Found parry remotes and key")
+                    end
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- Custom utility functions
+local function CalculateAverage(t)
+    local sum = 0
+    for _, v in ipairs(t) do
+        sum = sum + v
+    end
+    return sum / #t
+end
+
+local function GetBall()
+    for _, Ball in ipairs(workspace.Balls:GetChildren()) do
+        if Ball:GetAttribute("realBall") then
+            return Ball
+        end
+    end
+    return nil
+end
+
+local function GetClosestPlayer()
+    local ClosestEntity = nil
+    local MaxDistance = math.huge
+    for _, Entity in pairs(Alive:GetChildren()) do
+        if tostring(Entity) ~= tostring(LocalPlayer) and Entity:FindFirstChild("PrimaryPart") then
+            local Distance = (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and (LocalPlayer.Character.HumanoidRootPart.Position - Entity.PrimaryPart.Position).Magnitude) or math.huge
+            if Distance < MaxDistance then
+                MaxDistance = Distance
+                ClosestEntity = Entity
+            end
+        end
+    end
+    return ClosestEntity, MaxDistance
+end
+
+local function ResetConnection()
+    if Connection then
+        Connection:Disconnect()
+        Connection = nil
+    end
+end
+
+-- Reset visualization elements
+local function ClearVisualizations()
+    if ParryRadiusVisualization then
+        ParryRadiusVisualization:Destroy()
+        ParryRadiusVisualization = nil
+    end
+    
+    for _, point in ipairs(BallPredictionPoints) do
+        if point and point.Parent then
+            point:Destroy()
+        end
+    end
+    BallPredictionPoints = {}
+end
+
+-- Create visual elements for ball path prediction
+local function CreateBallPathVisualizer(positions)
+    if not VisualizeBallPath then return end
+    
+    for _, point in ipairs(BallPredictionPoints) do
+        if point and point.Parent then
+            point:Destroy()
+        end
+    end
+    BallPredictionPoints = {}
+    
+    for i, position in ipairs(positions) do
+        local visualPoint = Instance.new("Part")
+        visualPoint.Shape = Enum.PartType.Ball
+        visualPoint.Size = Vector3.new(0.5, 0.5, 0.5)
+        visualPoint.Position = position
+        visualPoint.Anchored = true
+        visualPoint.CanCollide = false
+        visualPoint.Transparency = 0.7
+        visualPoint.Material = Enum.Material.Neon
+        visualPoint.Color = Color3.fromHSV(i/#positions * 0.8, 1, 1) -- Color gradient based on position in path
+        visualPoint.Parent = workspace
+        table.insert(BallPredictionPoints, visualPoint)
+    end
+end
+
+-- Create a visualization of the parry radius
+local function VisualizeRadius()
+    if not VisualizeParryRadius or not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    if ParryRadiusVisualization then
+        ParryRadiusVisualization:Destroy()
+    end
+    
+    local hrp = LocalPlayer.Character.HumanoidRootPart
+    
+    ParryRadiusVisualization = Instance.new("Part")
+    ParryRadiusVisualization.Shape = Enum.PartType.Ball
+    ParryRadiusVisualization.Size = Vector3.new(ParryRadius * 2, ParryRadius * 2, ParryRadius * 2)
+    ParryRadiusVisualization.Position = hrp.Position
+    ParryRadiusVisualization.Anchored = true
+    ParryRadiusVisualization.CanCollide = false
+    ParryRadiusVisualization.Transparency = 0.8
+    ParryRadiusVisualization.Material = Enum.Material.ForceField
+    ParryRadiusVisualization.Color = ParryVisualizerColor
+    ParryRadiusVisualization.Parent = workspace
+end
+
+-- Advanced ball position prediction
+local function PredictBallPosition(Ball, TimeAhead)
+    if not Ball then return Vector3.zero end
+    
+    local Velocity = (Ball:FindFirstChild("zoomies") and Ball.zoomies.VectorVelocity) or Vector3.zero
+    
+    -- Basic linear prediction
+    local BasicPrediction = Ball.Position + Velocity * TimeAhead
+    
+    -- If we have enough history for more advanced prediction
+    if #BallHistory >= 3 then
+        -- Calculate acceleration
+        local currentVelocity = Velocity.Magnitude
+        local prevVelocity = BallHistory[#BallHistory].Velocity.Magnitude
+        local acceleration = (currentVelocity - prevVelocity) / FrameUpdateRate
+        
+        -- Adjust prediction based on acceleration
+        local accelerationFactor = 0.5 * acceleration * TimeAhead * TimeAhead
+        local direction = Velocity.Unit
+        
+        -- Apply acceleration adjustment
+        local AdvancedPrediction = BasicPrediction + (direction * accelerationFactor)
+        
+        -- Check if the ball is likely to hit a wall
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterType = Enum.RaycastFilterType.Include
+        raycastParams.FilterDescendantsInstances = {workspace.Map}
+        
+        local rayResult = workspace:Raycast(Ball.Position, Velocity.Unit * math.min(Velocity.Magnitude * TimeAhead, 100), raycastParams)
+        
+        if rayResult then
+            -- The ball will hit a wall, calculate bounce
+            local hitNormal = rayResult.Normal
+            local reflectionDirection = Velocity.Unit - (2 * Velocity.Unit:Dot(hitNormal) * hitNormal)
+            local bouncePosition = rayResult.Position
+            local distanceToBounce = (Ball.Position - bouncePosition).Magnitude
+            local timeToWall = distanceToBounce / Velocity.Magnitude
+            
+            if timeToWall < TimeAhead then
+                local remainingTime = TimeAhead - timeToWall
+                return bouncePosition + reflectionDirection * (Velocity.Magnitude * remainingTime)
+            end
+        end
+        
+        return AdvancedPrediction
+    end
+    
+    return BasicPrediction
+end
+
+-- Enhanced curve detection
+local function IsCurved()
+    local Ball = GetBall()
+    local Character = LocalPlayer.Character
+    if not Ball or not Character or not Character:FindFirstChild("HumanoidRootPart") then
+        return false
+    end
+
+    local Zoomies = Ball:FindFirstChild("zoomies")  
+    if not Zoomies then  
+        return false  
+    end  
+
+    local Ping = game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue() / 1000  
+    local Velocity = Zoomies.VectorVelocity  
+    local BallDirection = Velocity.Unit  
+    local HRP = Character.HumanoidRootPart  
+    local Direction = (HRP.Position - Ball.Position).Unit  
+    local Dot = Direction:Dot(BallDirection)  
+    local Speed = Velocity.Magnitude  
+    local Distance = (HRP.Position - Ball.Position).Magnitude  
+
+    -- Enhanced velocity tracking for better curve detection
+    table.insert(PreviousVelocities, Velocity)
+    if #PreviousVelocities > MaxVelocitySamples then
+        table.remove(PreviousVelocities, 1)
+    end
+
+    -- More aggressive distance threshold for higher ball speeds
+    local DistanceThreshold = math.min(15 + Speed / 15, 25)
+    if Distance < DistanceThreshold then
+        return false
+    end
+
+    -- Ultra-precise dot product threshold with improved ping compensation
+    local DotThreshold = math.clamp(0.88 - Ping * 0.5 - Speed / 400 - (1/Distance) * 8, 0.45, 0.88)
+    if Dot < DotThreshold then
+        return true
+    end
+
+    -- Enhanced multi-sample direction change detection
+    if #PreviousVelocities >= 5 then
+        -- Calculate weighted direction changes (recent changes matter more)
+        local TotalDirectionChange = 0
+        local DirectionChanges = {}
+        local WeightSum = 0
+        
+        for i = 2, #PreviousVelocities do
+            local PrevDirection = PreviousVelocities[i-1].Unit
+            local CurrDirection = PreviousVelocities[i].Unit
+            local change = (CurrDirection - PrevDirection).Magnitude
+            local weight = (i / #PreviousVelocities) * 2 -- Weight recent changes higher
+            
+            table.insert(DirectionChanges, change)
+            TotalDirectionChange = TotalDirectionChange + (change * weight)
+            WeightSum = WeightSum + weight
+        end
+        
+        local WeightedAverageChange = TotalDirectionChange / WeightSum
+        
+        -- Improved threshold for more accurate curve detection
+        if WeightedAverageChange > 0.09 then
+            return true
+        end
+        
+        -- Check for acceleration patterns in non-linear motion
+        local ChangeRate = 0
+        local ChangeCount = 0
+        
+        for i = 3, #DirectionChanges do
+            local firstDiff = DirectionChanges[i-1] - DirectionChanges[i-2]
+            local secondDiff = DirectionChanges[i] - DirectionChanges[i-1]
+            
+            -- Look for sign changes in acceleration (indicates curve)
+            if (firstDiff * secondDiff < 0) then
+                ChangeCount = ChangeCount + 1
+            end
+            
+            ChangeRate = ChangeRate + math.abs(secondDiff - firstDiff)
+        end
+        
+        if #DirectionChanges > 2 then
+            ChangeRate = ChangeRate / (#DirectionChanges - 2)
+            
+            -- Detect either high change rate or multiple direction switches
+            if ChangeRate > 0.025 or ChangeCount >= 2 then
+                return true
+            end
+        end
+    end
+
+    -- Forward projection test - see if trajectory will change significantly
+    if #BallHistory >= 4 then
+        local currentDir = BallVelocityVector.Unit
+        local oldVel = BallHistory[#BallHistory-3].Velocity
+        local projectedPos = Ball.Position + (currentDir * Speed * 0.2)
+        local oldDir = (projectedPos - BallHistory[#BallHistory-3].Position).Unit
+        
+        local angleChange = math.acos(math.clamp(currentDir:Dot(oldDir), -1, 1)) * (180/math.pi)
+        if angleChange > 12 then
+            return true
+        end
+    end
+
+    return false
+end
+
+-- Track ball and update properties
+local function UpdateBallProperties()
+    local Ball = GetBall()
+    local Character = LocalPlayer.Character
+    if Ball and Character and Character:FindFirstChild("HumanoidRootPart") then
+        local HRP = Character.HumanoidRootPart
+        LastBallPosition = Ball.Position
+        local Velocity = Ball:FindFirstChild("zoomies") and Ball.zoomies.VectorVelocity or Vector3.zero
+        
+        -- Update global ball properties
+        LastBallVelocity = BallVelocityVector
+        BallVelocityVector = Velocity
+        BallSpeed = Velocity.Magnitude
+        BallDistance = (HRP.Position - Ball.Position).Magnitude
+        BallDirection = (HRP.Position - Ball.Position).Unit
+        
+        -- Update ball history for trajectory prediction
+        table.insert(BallHistory, {
+            Position = Ball.Position,
+            Velocity = Velocity,
+            Time = tick(),
+            Distance = BallDistance
+        })
+        
+        -- Keep history at a reasonable size
+        if #BallHistory > MaxBallHistory then
+            table.remove(BallHistory, 1)
+        end
+        
+        -- Update predicted position for visualization
+        local Ping = game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue() / 1000
+        local DynamicPredictionTime = math.clamp(0.05 + Ping + BallSpeed / 800, 0.05, 0.15)
+        PredictedBallPosition = PredictBallPosition(Ball, DynamicPredictionTime)
+        
+        -- Create visual prediction path if enabled
+        if VisualizeBallPath and tick() - LastFrameTime > FrameUpdateRate then
+            local predictionPoints = {}
+            for i = 1, 10 do
+                local timePoint = DynamicPredictionTime * (i/10)
+                table.insert(predictionPoints, PredictBallPosition(Ball, timePoint))
+            end
+            CreateBallPathVisualizer(predictionPoints)
+            LastFrameTime = tick()
+        end
+        
+        -- Update parry radius visualization
+        if VisualizeParryRadius and tick() - LastFrameTime > FrameUpdateRate then
+            VisualizeRadius()
+            LastFrameTime = tick()
+        end
+    else
+        BallSpeed = 0
+        BallVelocityVector = Vector3.zero
+        BallDistance = 0
+        BallDirection = Vector3.zero
+        LastBallPosition = Vector3.zero
+        LastBallVelocity = Vector3.zero
+        PreviousVelocities = {}
+        BallHistory = {}
+    end
+end
+
+-- Ultra-enhanced auto parry with advanced ball tracking and prediction
+local function AutoParry()
+    if not IsAutoParryEnabled then return end
+    
+    local Ball = GetBall()
+    local Character = LocalPlayer.Character
+    if not Ball or not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
+    local HRP = Character:FindFirstChild("HumanoidRootPart")
+
+    local Ping = game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue() / 1000
+    
+    -- Ultra-dynamic prediction time with advanced compensation factors
+    local BaseTimeMultiplier = 1
+    local SpeedFactor = 0.001
+    local PingFactor = 1
+    local DistanceFactor = 0.003
+    
+    if AutoParryMode == "Aggressive" then
+        BaseTimeMultiplier = 0.75
+        SpeedFactor = 0.0007
+        PingFactor = 0.75
+        DistanceFactor = 0.002
+    elseif AutoParryMode == "Conservative" then
+        BaseTimeMultiplier = 1.25
+        SpeedFactor = 0.0013
+        PingFactor = 1.25
+        DistanceFactor = 0.004
+    end
+    
+    -- Improved prediction time calculation with distance factor
+    local DynamicPredictionTime = math.clamp(
+        0.045 * BaseTimeMultiplier + 
+        Ping * PingFactor + 
+        BallSpeed * SpeedFactor + 
+        BallDistance * DistanceFactor, 
+        0.04, 
+        0.18
+    )
+    
+    -- Enhanced radius scaling with quadratic speed bonus
+    local BaseRadius = ParryRadius
+    local SpeedBonus = math.min(BallSpeed / 2.8, 14) -- More generous speed bonus
+    if BallSpeed > 120 then
+        -- Quadratic scaling for very fast balls
+        SpeedBonus = SpeedBonus * (1 + ((BallSpeed - 120) / 120) * 0.4)
+    end
+    
+    local PingBonus = Ping * 4 -- Increased ping compensation
+    local DistanceBonus = 0
+    
+    -- Improved distance adjustment
+    if BallDistance > 18 then
+        DistanceBonus = math.min((BallDistance - 18) / 1.8, 6)
+    end
+    
+    -- Apply any additional modifiers based on game state
+    local AdjustedRadius = BaseRadius + SpeedBonus + PingBonus - DistanceBonus
+    
+    -- Main auto parry logic for when ball is targeted at player
+    if Ball:GetAttribute("target") == LocalPlayer.Name and not IsParried then
+        local IsBallCurved = IsCurved()
+        local PredictedPosition = PredictBallPosition(Ball, DynamicPredictionTime)
+        local DistanceToPredicted = (HRP.Position - PredictedPosition).Magnitude
+        
+        -- Advanced curve handling with trajectory analysis
+        if IsBallCurved then
+            -- More aggressive radius expansion for curved balls
+            AdjustedRadius = AdjustedRadius * 1.3
+            
+            -- Adjust prediction time based on curvature severity
+            if #PreviousVelocities >= 5 then
+                local curveSeverity = 0
+                for i = 2, #PreviousVelocities do
+                    curveSeverity = curveSeverity + (PreviousVelocities[i].Unit - PreviousVelocities[i-1].Unit).Magnitude
+                end
+                curveSeverity = curveSeverity / (#PreviousVelocities - 1)
+                
+                -- Adjust prediction time more for severely curved balls
+                local curveFactor = math.clamp(curveSeverity * 10, 0.6, 0.9)
+                DynamicPredictionTime = DynamicPredictionTime * curveFactor
+            else
+                DynamicPredictionTime = DynamicPredictionTime * 0.75
+            end
+        end
+        
+        -- Ultra-precise parry trigger conditions with mode-specific adjustments
+        local ShouldParry = false
+        
+        if AutoParryMode == "Aggressive" then
+            -- Hyper-aggressive mode: parry very early, extremely lenient conditions
+            ShouldParry = (not IsBallCurved and DistanceToPredicted <= AdjustedRadius * 1.2) or 
+                          (IsBallCurved and DistanceToPredicted <= AdjustedRadius * 1.4) or 
+                          (BallSpeed > 85 and BallDistance < 20)
+        elseif AutoParryMode == "Conservative" then
+            -- Super-conservative mode: wait until last moment, very strict conditions
+            ShouldParry = (not IsBallCurved and DistanceToPredicted <= AdjustedRadius * 0.85) or 
+                          (IsBallCurved and DistanceToPredicted <= AdjustedRadius * 1.05) or 
+                          (BallSpeed > 115 and BallDistance < 12)
+        else -- Advanced mode (default)
+            -- Perfectly balanced approach with optimized thresholds
+            ShouldParry = (not IsBallCurved and DistanceToPredicted <= AdjustedRadius * 1.05) or 
+                          (IsBallCurved and DistanceToPredicted <= AdjustedRadius * 1.25) or 
+                          (BallSpeed > 95 and BallDistance < 16)
+        end
+        
+        -- Emergency parry for extremely fast balls regardless of other conditions
+        if BallSpeed > 140 and BallDistance < 25 and DistanceToPredicted < AdjustedRadius * 2 then
+            ShouldParry = true
+        end
+        
+        if ShouldParry then
+            -- Execute parry
+            for Remote, Args in pairs(Remotes) do
+                Remote:FireServer(Args, Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])
+            end
+            
+            IsParried = true
+            Cooldown = tick()
+            Parries = math.min(Parries + 1, 7)
+            
+            -- Record successful parry
+            SuccessfulParries = SuccessfulParries + 1
+            TotalBallsParried = TotalBallsParried + 1
+            
+            -- Play parry emote if selected
+            if SelectedEmote and AnimationStorage[SelectedEmote] then
+                if CurrentAnimationTrack then
+                    CurrentAnimationTrack:Stop()
+                end
+                
+                local Animator = Humanoid and Humanoid.Animator
+                if Animator then
+                    CurrentAnimationTrack = Animator:LoadAnimation(AnimationStorage[SelectedEmote])
+                    CurrentAnimationTrack:Play()
+                end
+            end
+            
+            -- Display notification
+            if NotificationSound then
+                local sound = Instance.new("Sound")
+                sound.SoundId = "rbxassetid://6895079853" -- Parry success sound
+                sound.Volume = 0.5
+                sound.Parent = LocalPlayer.PlayerGui
+                sound:Play()
+                game.Debris:AddItem(sound, 1)
+            end
+            
+            -- Send chat message if enabled
+            if ChatSpamEnabled and #ChatMessages > 0 then
+                local ChatChannel = TextChatService:FindFirstChild("TextChannels") and TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+                if ChatChannel then
+                    ChatChannel:SendAsync(ChatMessages[math.random(1, #ChatMessages)])
+                end
+            end
+        end
+    end
+
+    -- Advanced proactive parrying system for balls not directly targeted at player
+    local ClosestEntity, EntityDistance = GetClosestPlayer()
+    if ClosestEntity and not IsParried and Ball:GetAttribute("target") ~= LocalPlayer.Name then
+        -- Intelligent proximity detection with advanced trajectory analysis
+        local BallToPlayerAngle = math.acos(math.clamp(BallDirection:Dot(BallVelocityVector.Unit), -1, 1)) * (180/math.pi)
+        local InDangerZone = BallDistance <= 30 and EntityDistance <= 40 and Parries < 7 and BallSpeed > 45
+        
+        -- Angle-based threat assessment
+        local AngleIsThreatening = BallToPlayerAngle < 45 or (BallDistance < 10 and BallToPlayerAngle < 90)
+        
+        -- Advanced redirection risk calculation
+        local BallToPlayerDirection = (HRP.Position - Ball.Position).Unit
+        local BallToTargetDirection = (ClosestEntity.PrimaryPart.Position - Ball.Position).Unit
+        local TargetToPlayerDirection = (HRP.Position - ClosestEntity.PrimaryPart.Position).Unit
+        
+        -- Calculate enhanced dot products with weighted factors
+        local BallPlayerDot = BallToPlayerDirection:Dot(BallVelocityVector.Unit)
+        local TargetPlayerDot = TargetToPlayerDirection:Dot(BallToPlayerDirection)
+        
+        -- Calculate the angle between velocity and player direction for better prediction
+        local VelocityToPlayerAngle = math.acos(math.clamp(BallPlayerDot, -1, 1)) * (180/math.pi)
+        
+        -- Calculate potential intersection with player's movement area
+        local PotentialIntersection = BallPlayerDot > 0.25 and TargetPlayerDot > 0.55
+        
+        -- High-risk indicators
+        local HighRiskSituation = BallDistance < 15 and EntityDistance < 20 and BallSpeed > 60
+        
+        -- Triple-factor threat assessment
+        if (InDangerZone and (AngleIsThreatening or PotentialIntersection)) or HighRiskSituation then
+            local TimeSinceLastParry = tick() - LastParryTime
+            
+            -- Calculate optimal parry timing window based on ball speed
+            local OptimalWindow = 0.65
+            if BallSpeed > 100 then
+                OptimalWindow = 0.5
+            end
+            
+            -- Execute predictive parry with proper timing
+            if TimeSinceLastParry > OptimalWindow then
+                for Remote, Args in pairs(Remotes) do
+                    Remote:FireServer(Args, Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])
+                end
+                
+                Parries = math.min(Parries + 1, 7)
+                LastParryTime = tick()
+            end
+        end
+    end
+
+    -- Optimized cooldown management with dynamic timing
+    if IsParried and (tick() - Cooldown) >= 1.15 then
+        IsParried = false
+    end
+    
+    -- Better parry count decay for more responsive gameplay
+    if Parries > 0 and (tick() - Cooldown) >= 0.55 then
+        Parries = math.max(Parries - 1, 0)
+    end
+    
+    -- Emergency reset if needed
+    if Parries > 0 and (tick() - LastParryTime) > 3.0 then
+        Parries = 0
+    end
+end
+
+-- Initialize connection for target change
+workspace.Balls.ChildAdded:Connect(function()
+    local Ball = GetBall()
+    if not Ball then return end
+    
+    ResetConnection()
+    Connection = Ball:GetAttributeChangedSignal("target"):Connect(function()
+        IsParried = false
+        
+        -- If the ball is targeting the player, record the time for reaction time calculation
+        if Ball:GetAttribute("target") == LocalPlayer.Name then
+            LastParryTime = tick()
+        end
+    end)
+end)
+
+-- Run the update loop
+RunService.PreSimulation:Connect(function()
+    -- Skip updates when not needed to optimize performance
+    if PerformanceMode and not IsAutoParryEnabled and not VisualizeBallPath and not VisualizeParryRadius then
+        local Ball = GetBall()
+        if not Ball or not Ball:GetAttribute("target") then return end
+    end
+    
+    UpdateBallProperties()
+    AutoParry()
+    
+    -- Update FOV if enabled
+    if FOVEnabled then
+        Camera.FieldOfView = CustomFOV
+    else
+        Camera.FieldOfView = DefaultFOV
+    end
+end)
+
+-- Update parry data based on selected type
+local function updateParryData(parryType)
+    local Vector3_Mouse_Location
+    if Last_Input == Enum.UserInputType.MouseButton1 or
+       Last_Input == Enum.UserInputType.MouseButton2 or
+       Last_Input == Enum.UserInputType.Keyboard then
+        local Mouse_Location = UserInputService:GetMouseLocation()
+        Vector3_Mouse_Location = {Mouse_Location.X, Mouse_Location.Y}
+    else
+        Vector3_Mouse_Location = {Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2}
+    end
+    
+    local Events = {}
+    for _, v in pairs(Alive:GetChildren()) do
+        if v:FindFirstChild("PrimaryPart") then
+            Events[tostring(v)] = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
+        end
+    end
+
+    local data = nil
+    if parryType == "Custom" then
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}
+    elseif parryType == "Backwards" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Random" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Vector3.new(math.random(-3000,3000), math.random(-3000,3000), math.random(-3000,3000))), Events, Vector3_Mouse_Location}
+    elseif parryType == "Straight" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Up" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.UpVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Right" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Left" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}
+    else
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}
+    end
+    
+    Parry_Data = data
+end
+
+-- Initialize parry data
+updateParryData(Parry_Type)
+
+-- Modify announcer text
+local Announcer = LocalPlayer.PlayerGui:WaitForChild("announcer")
+Announcer.ChildAdded:Connect(function(Value)
+    if Value.Name == "Winner" or Value.Name == "Killed" then
+        Value:GetPropertyChangedSignal("Text"):Connect(function()
+            Value.Text = "Vexora Premium | Ultimate Parry"
+        end)
+        Value.Text = "Vexora Premium | Ultimate Parry"
+    end
+end)
+
+-- Event handlers for parry success
+ReplicatedStorage.Remotes.ParrySuccess.OnClientEvent:Connect(function()
+    if LocalPlayer.Character.Parent ~= Alive then
+        return
+    end
+    
+    -- Calculate reaction time if we have a timestamp
+    if LastParryTime > 0 then
+        local reactionTime = tick() - LastParryTime
+        table.insert(ReactionTimes, reactionTime)
+        if #ReactionTimes > MaxReactionTimes then
+            table.remove(ReactionTimes, 1)
+        end
+        AverageReactionTime = CalculateAverage(ReactionTimes)
+        LastParryTime = 0
+    end
+end)
+
+ReplicatedStorage.Remotes.ParrySuccessAll.OnClientEvent:Connect(function(_, root)
+    if root.Parent and root.Parent ~= LocalPlayer.Character then
+        if root.Parent.Parent ~= Alive then
+            return
+        end
+        
+        -- Send chat message if spam is enabled
+        if ChatSpamEnabled and #ChatMessages > 0 then
+            local ChatChannel = TextChatService:FindFirstChild("TextChannels") and TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+            if ChatChannel then
+                ChatChannel:SendAsync(ChatMessages[math.random(1, #ChatMessages)])
+            end
+        end
+    end
+end)
+
+-- Character respawn handling
+LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+    Character = newCharacter
+    Humanoid = newCharacter:WaitForChild("Humanoid")
+    
+    if CurrentAnimationTrack then
+        CurrentAnimationTrack:Stop()
+        CurrentAnimationTrack = nil
+    end
+    
+    -- Reset parry statistics
+    IsParried = false
+    Parries = 0
+    
+    -- Clear visualizations
+    ClearVisualizations()
+end)
+
+-- Apply UI theme settings
+local function ApplyUITheme()
+    if UITheme == "Midnight" then
+        Rayfield:ToggleOldTabStyle(false)
+        Rayfield.Background = Color3.fromRGB(10, 10, 15)
+        Rayfield.Accent = UIAccentColor
+        Rayfield.Transparency = UITransparency
+        Rayfield.TextColor = Color3.fromRGB(240, 240, 250)
+    elseif UITheme == "Neon" then
+        Rayfield:ToggleOldTabStyle(false)
+        Rayfield.Background = Color3.fromRGB(15, 15, 20)
+        Rayfield.Accent = UIAccentColor
+        Rayfield.Transparency = UITransparency
+        Rayfield.TextColor = Color3.fromRGB(255, 255, 255)
+    elseif UITheme == "Elegant" then
+        Rayfield:ToggleOldTabStyle(true)
+        Rayfield.Background = Color3.fromRGB(25, 25, 30)
+        Rayfield.Accent = UIAccentColor
+        Rayfield.Transparency = UITransparency
+        Rayfield.TextColor = Color3.fromRGB(220, 220, 230)
+    end
+    
+    Rayfield:UpdateTheme()
+end
+
+-- Configure and update post-processing effects
+local function UpdatePostProcessing()
+    local bloom = Lighting:FindFirstChild("VexoraBloom")
+    if not bloom and EnableBloom then
+        bloom = Instance.new("BloomEffect")
+        bloom.Name = "VexoraBloom"
+        bloom.Intensity = BloomIntensity
+        bloom.Size = 24
+        bloom.Threshold = 2
+        bloom.Parent = Lighting
+    elseif bloom then
+        bloom.Enabled = EnableBloom
+        bloom.Intensity = BloomIntensity
+    end
+    
+    local motionBlur = Lighting:FindFirstChild("VexoraMotionBlur")
+    if not motionBlur and EnableMotionBlur then
+        motionBlur = Instance.new("BlurEffect")
+        motionBlur.Name = "VexoraMotionBlur"
+        motionBlur.Size = MotionBlurStrength
+        motionBlur.Parent = Lighting
+    elseif motionBlur then
+        motionBlur.Enabled = EnableMotionBlur
+        motionBlur.Size = MotionBlurStrength
+    end
+end
+
+-- Apply initial UI theme
+ApplyUITheme()
+
+-- Create a premium UI
+local Window = Rayfield:CreateWindow({
+    Name = "Vexora Premium",
+    LoadingTitle = "Vexora Premium",
+    LoadingSubtitle = "The Ultimate Parry Experience",
+    ConfigurationSaving = {
+        Enabled = true,
+        FolderName = "VexoraPremium",
+        FileName = "Config"
+    },
+    Discord = {
+        Enabled = false,
+        Invite = "",
+        RememberJoins = true
+    },
+    KeySystem = false
+})
+
+-- Main tab
+local MainTab = Window:CreateTab("Main", 10710507284) -- feather icon: home
+MainTab:CreateSection("Premium Auto Parry")
+
+local AutoParryToggle = MainTab:CreateToggle({
+    Name = "🛡️ Auto Parry",
+    Info = "Automatically parries incoming balls with advanced prediction",
+    CurrentValue = false,
+    Flag = "AutoParry",
+    Callback = function(Value)
+        IsAutoParryEnabled = Value
+        Rayfield:Notify({
+            Title = Value and "Auto Parry Enabled" or "Auto Parry Disabled",
+            Content = Value and "Balls will be automatically parried" or "Manual parry mode activated",
+            Duration = 2,
+            Image = 10729012702, -- feather icon: shield
+        })
+    end
+})
+
+local ParryModeDropdown = MainTab:CreateDropdown({
+    Name = "Parry Mode",
+    Options = {"Advanced", "Aggressive", "Conservative"},
+    CurrentOption = AutoParryMode,
+    Flag = "ParryMode",
+    Callback = function(Option)
+        AutoParryMode = Option
+        
+        -- Update parry parameters based on mode
+        if Option == "Aggressive" then
+            ParryRadius = 18
+            Rayfield:Notify({
+                Title = "Aggressive Mode",
+                Content = "Parries earlier with wider radius",
+                Duration = 2,
+                Image = 10729078082, -- feather icon: zap
+            })
+        elseif Option == "Conservative" then
+            ParryRadius = 12
+            Rayfield:Notify({
+                Title = "Conservative Mode",
+                Content = "Parries later with precise timing",
+                Duration = 2,
+                Image = 10729062922, -- feather icon: shield
+            })
+        else
+            ParryRadius = 15
+            Rayfield:Notify({
+                Title = "Advanced Mode",
+                Content = "Balanced parry approach",
+                Duration = 2,
+                Image = 10729072961, -- feather icon: activity
+            })
+        end
+    end
+})
+
+local ParryRadiusSlider = MainTab:CreateSlider({
+    Name = "Parry Radius",
+    Range = {5, 25},
+    Increment = 1,
+    Suffix = "studs",
+    CurrentValue = ParryRadius,
+    Flag = "ParryRadius",
+    Callback = function(Value)
+        ParryRadius = Value
+    end,
+})
+
+MainTab:CreateSection("Parry Direction Settings")
+
+local ParryTypeDropdown = MainTab:CreateDropdown({
+    Name = "Parry Direction",
+    Options = {"Custom", "Backwards", "Random", "Straight", "Up", "Right", "Left"},
+    CurrentOption = Parry_Type,
+    Flag = "ParryType",
+    Callback = function(Option)
+        Parry_Type = Option
+        updateParryData(Option)
+        
+        Rayfield:Notify({
+            Title = "Parry Direction Changed",
+            Content = "Switched to " .. Option .. " parry direction",
+            Duration = 2,
+            Image = 10729084420, -- feather icon: arrow-right
+        })
+    end
+})
+
+MainTab:CreateSection("Emote Settings")
+
+local EmoteDropdown = MainTab:CreateDropdown({
+    Name = "Parry Emote",
+    Options = EmoteOptions,
+    CurrentOption = "",
+    Flag = "ParryEmote",
+    Callback = function(Option)
+        SelectedEmote = Option ~= "" and Option or nil
+        
+        -- Preview the emote
+        if SelectedEmote and AnimationStorage[SelectedEmote] then
+            if CurrentAnimationTrack then
+                CurrentAnimationTrack:Stop()
+            end
+            
+            local Animator = Humanoid and Humanoid.Animator
+            if Animator then
+                CurrentAnimationTrack = Animator:LoadAnimation(AnimationStorage[SelectedEmote])
+                CurrentAnimationTrack:Play()
+            end
+        end
+    end
+})
+
+-- Player tab
+local PlayerTab = Window:CreateTab("Player", 10729013426) -- feather icon: user
+PlayerTab:CreateSection("Player Customization")
+
+local FOVToggle = PlayerTab:CreateToggle({
+    Name = "Enable Custom FOV",
+    Info = "Change your field of view",
+    CurrentValue = FOVEnabled,
+    Flag = "EnableFOV",
+    Callback = function(Value)
+        FOVEnabled = Value
+        if not Value then
+            Camera.FieldOfView = DefaultFOV
+        end
+    end
+})
+
+local FOVSlider = PlayerTab:CreateSlider({
+    Name = "Field of View",
+    Range = {30, 120},
+    Increment = 1,
+    Suffix = "°",
+    CurrentValue = CustomFOV,
+    Flag = "FOVValue",
+    Callback = function(Value)
+        CustomFOV = Value
+        if FOVEnabled then
+            Camera.FieldOfView = Value
+        end
+    end,
+})
+
+PlayerTab:CreateSection("Visual Effects")
+
+local BloomToggle = PlayerTab:CreateToggle({
+    Name = "Enable Bloom",
+    Info = "Adds a glow effect to bright objects",
+    CurrentValue = EnableBloom,
+    Flag = "EnableBloom",
+    Callback = function(Value)
+        EnableBloom = Value
+        UpdatePostProcessing()
+    end
+})
+
+local BloomSlider = PlayerTab:CreateSlider({
+    Name = "Bloom Intensity",
+    Range = {0.1, 1},
+    Increment = 0.1,
+    Suffix = "x",
+    CurrentValue = BloomIntensity,
+    Flag = "BloomIntensity",
+    Callback = function(Value)
+        BloomIntensity = Value
+        UpdatePostProcessing()
+    end,
+})
+
+local MotionBlurToggle = PlayerTab:CreateToggle({
+    Name = "Enable Motion Blur",
+    Info = "Adds blur when moving quickly",
+    CurrentValue = EnableMotionBlur,
+    Flag = "EnableMotionBlur",
+    Callback = function(Value)
+        EnableMotionBlur = Value
+        UpdatePostProcessing()
+    end
+})
+
+local MotionBlurSlider = PlayerTab:CreateSlider({
+    Name = "Motion Blur Strength",
+    Range = {5, 20},
+    Increment = 1,
+    Suffix = "px",
+    CurrentValue = MotionBlurStrength,
+    Flag = "MotionBlurStrength",
+    Callback = function(Value)
+        MotionBlurStrength = Value
+        UpdatePostProcessing()
+    end,
+})
+
+PlayerTab:CreateSection("Chat Settings")
+
+local ChatSpamToggle = PlayerTab:CreateToggle({
+    Name = "Enable Chat Messages",
+    Info = "Automatically send messages when parrying",
+    CurrentValue = ChatSpamEnabled,
+    Flag = "ChatSpam",
+    Callback = function(Value)
+        ChatSpamEnabled = Value
+    end
+})
+
+local CustomMessagesInput = PlayerTab:CreateInput({
+    Name = "Add Custom Message",
+    PlaceholderText = "Enter custom message",
+    RemoveTextAfterFocusLost = true,
+    Callback = function(Text)
+        if Text and Text ~= "" then
+            table.insert(ChatMessages, Text)
+            Rayfield:Notify({
+                Title = "Message Added",
+                Content = "Added: " .. Text,
+                Duration = 2,
+                Image = 10729079718, -- feather icon: message-circle
+            })
+        end
+    end,
+})
+
+-- Visual tab
+local VisualsTab = Window:CreateTab("Visuals", 10729063095) -- feather icon: eye
+VisualsTab:CreateSection("Ball Visualization")
+
+local VisualizePathToggle = VisualsTab:CreateToggle({
+    Name = "Visualize Ball Path",
+    Info = "Shows the predicted path of the ball",
+    CurrentValue = VisualizeBallPath,
+    Flag = "VisualizePath",
+    Callback = function(Value)
+        VisualizeBallPath = Value
+        if not Value then
+            for _, point in ipairs(BallPredictionPoints) do
+                if point and point.Parent then
+                    point:Destroy()
+                end
+            end
+            BallPredictionPoints = {}
+        end
+    end
+})
+
+local VisualizeRadiusToggle = VisualsTab:CreateToggle({
+    Name = "Visualize Parry Radius",
+    Info = "Shows your parry radius as a sphere",
+    CurrentValue = VisualizeParryRadius,
+    Flag = "VisualizeRadius",
+    Callback = function(Value)
+        VisualizeParryRadius = Value
+        if not Value and ParryRadiusVisualization then
+            ParryRadiusVisualization:Destroy()
+            ParryRadiusVisualization = nil
+        end
+    end
+})
+
+VisualsTab:CreateSection("UI Customization")
+
+local ThemeDropdown = VisualsTab:CreateDropdown({
+    Name = "UI Theme",
+    Options = {"Midnight", "Neon", "Elegant"},
+    CurrentOption = UITheme,
+    Flag = "UITheme",
+    Callback = function(Option)
+        UITheme = Option
+        ApplyUITheme()
+    end
+})
+
+local ColorPicker = VisualsTab:CreateColorPicker({
+    Name = "Accent Color",
+    Color = UIAccentColor,
+    Flag = "AccentColor",
+    Callback = function(Color)
+        UIAccentColor = Color
+        ApplyUITheme()
+    end
+})
+
+local TransparencySlider = VisualsTab:CreateSlider({
+    Name = "UI Transparency",
+    Range = {0, 0.5},
+    Increment = 0.05,
+    Suffix = "x",
+    CurrentValue = UITransparency,
+    Flag = "UITransparency",
+    Callback = function(Value)
+        UITransparency = Value
+        ApplyUITheme()
+    end,
+})
+
+-- Stats tab
+local StatsTab = Window:CreateTab("Stats", 10729030109) -- feather icon: activity
+StatsTab:CreateSection("Ball Information")
+
+local BallSpeedDisplay = StatsTab:CreateParagraph({
+    Title = "Ball Speed",
+    Content = "Speed: 0 studs/s"
+})
+
+local BallDistanceDisplay = StatsTab:CreateParagraph({
+    Title = "Ball Distance",
+    Content = "Distance: 0 studs"
+})
+
+local BallTargetDisplay = StatsTab:CreateParagraph({
+    Title = "Ball Target",
+    Content = "Target: None"
+})
+
+StatsTab:CreateSection("Parry Statistics")
+
+local ParryCountDisplay = StatsTab:CreateParagraph({
+    Title = "Successful Parries",
+    Content = "Parries: 0"
+})
+
+local ReactionTimeDisplay = StatsTab:CreateParagraph({
+    Title = "Average Reaction Time",
+    Content = "Reaction Time: 0 ms"
+})
+
+-- Settings tab
+local SettingsTab = Window:CreateTab("Settings", 10729079491) -- feather icon: settings
+SettingsTab:CreateSection("Performance")
+
+local PerformanceModeToggle = SettingsTab:CreateToggle({
+    Name = "Performance Mode",
+    Info = "Optimizes performance by reducing visual updates",
+    CurrentValue = PerformanceMode,
+    Flag = "PerformanceMode",
+    Callback = function(Value)
+        PerformanceMode = Value
+    end
+})
+
+local NotificationSoundToggle = SettingsTab:CreateToggle({
+    Name = "Notification Sounds",
+    Info = "Play sounds on important events",
+    CurrentValue = NotificationSound,
+    Flag = "NotificationSound",
+    Callback = function(Value)
+        NotificationSound = Value
+    end
+})
+
+SettingsTab:CreateSection("Debug")
+
+local DebugModeToggle = SettingsTab:CreateToggle({
+    Name = "Debug Mode",
+    Info = "Shows additional debug information",
+    CurrentValue = DebugMode,
+    Flag = "DebugMode",
+    Callback = function(Value)
+        DebugMode = Value
+    end
+})
+
+-- Info tab
+local InfoTab = Window:CreateTab("Info", 10729079718) -- feather icon: info
+InfoTab:CreateSection("About Vexora Premium")
+
+InfoTab:CreateParagraph({
+    Title = "Vexora Premium",
+    Content = "The ultimate ball-parrying script with advanced prediction, customization, and premium features."
+})
+
+InfoTab:CreateParagraph({
+    Title = "Version",
+    Content = "v2.1.0 Premium"
+})
+
+InfoTab:CreateButton({
+    Name = "Copy Discord Invite",
+    Callback = function()
+        setclipboard("https://discord.gg/vexorapremium")
+        Rayfield:Notify({
+            Title = "Discord Invite Copied",
+            Content = "Join our community for updates and support!",
+            Duration = 5,
+            Image = 10729073519, -- feather icon: copy
+        })
+    end,
+})
+
+-- Update stats display
+RunService.RenderStepped:Connect(function()
+    -- Only update on interval to improve performance
+    if tick() - LastFrameTime < 0.1 then return end
+    LastFrameTime = tick()
+    
+    local Ball = GetBall()
+    
+    -- Update ball info
+    BallSpeedDisplay:Set({
+        Title = "Ball Speed",
+        Content = string.format("Speed: %.2f studs/s", BallSpeed)
+    })
+    
+    BallDistanceDisplay:Set({
+        Title = "Ball Distance",
+        Content = string.format("Distance: %.2f studs", BallDistance)
+    })
+    
+    if Ball then
+        local target = Ball:GetAttribute("target") or "None"
+        BallTargetDisplay:Set({
+            Title = "Ball Target",
+            Content = "Target: " .. target
+        })
+    else
+        BallTargetDisplay:Set({
+            Title = "Ball Target",
+            Content = "Target: None"
+        })
+    end
+    
+    -- Update parry stats
+    ParryCountDisplay:Set({
+        Title = "Successful Parries",
+        Content = string.format("Total Parries: %d", TotalBallsParried)
+    })
+    
+    ReactionTimeDisplay:Set({
+        Title = "Average Reaction Time",
+        Content = string.format("Reaction Time: %.2f ms", AverageReactionTime * 1000)
+    })
+end)
+
+-- Welcome notification
+Rayfield:Notify({
+    Title = "Vexora Premium Loaded",
+    Content = "Welcome to the ultimate parry experience!",
+    Duration = 5,
+    Image = 10729016669, -- feather icon: check-circle
+    Actions = {
+        Ignore = {
+            Name = "Okay!",
+            Callback = function()
+                print("Vexora Premium initialized")
+            end
+        },
+    },
+})
