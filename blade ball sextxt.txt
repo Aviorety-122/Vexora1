@@ -1,0 +1,1142 @@
+-- FemBlade Auto-Parry Script
+-- Custom UI with purple theme and improved parry distance
+
+-- Services
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local TweenService = game:GetService("TweenService")
+local StarterGui = game:GetService("StarterGui")
+
+-- Player Variables
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+local Alive = workspace.Alive
+
+-- Input Tracking
+local Last_Input = UserInputService:GetLastInputType()
+
+-- Variables for auto parry
+local Remotes = {}
+local Parry_Key = nil
+local Parry_Data = nil
+local Parry_Type = "Custom" -- Default curve type
+local Cooldown = 0
+local IsParried = false
+local Connection = nil
+
+-- Configuration Options
+local IsAutoParryEnabled = false
+local IsAutoSpamEnabled = false
+local IsManualSpamEnabled = false
+local IsKeyPressEnabled = false
+local IsNotifyEnabled = false
+local IsRandomizedAccuracy = false
+local IsTriggerBotEnabled = false
+
+-- Advanced configuration
+local ParryRadius = 43 -- Increased parry distance as requested
+local PredictionTime = 0.125 -- Slightly earlier prediction time
+local ParryAccuracy = 100 -- Percentage (0-100)
+local Parries = 0
+local CooldownProtection = false
+local AntiPhantom = false
+
+-- Detection Options
+local InfinityDetection = false
+local DeathSlashDetection = false
+local TimeHoleDetection = false
+local SlashOfFuryDetection = false
+local AutoAbility = false
+local AnimationFix = false
+
+-- UI Colors (Purple Theme)
+local Colors = {
+    Background = Color3.fromRGB(25, 25, 30),
+    Container = Color3.fromRGB(35, 30, 45),
+    Accent = Color3.fromRGB(140, 70, 240),
+    Text = Color3.fromRGB(240, 240, 240),
+    SubText = Color3.fromRGB(180, 180, 190),
+    Indicator = {
+        Enabled = Color3.fromRGB(130, 70, 240),
+        Disabled = Color3.fromRGB(70, 70, 80)
+    },
+    Shadow = Color3.fromRGB(20, 20, 25),
+    Slider = {
+        Background = Color3.fromRGB(50, 40, 65),
+        Fill = Color3.fromRGB(130, 70, 240)
+    }
+}
+
+-- UI Variables
+local FemBladeUI
+local MainFrame
+local MainContainer
+local SideBar
+local AutoParryContainer
+local AutoSpamContainer
+local ManualSpamContainer
+local TriggerBotContainer
+local AutoParryToggle
+local ParryTypeDropdown
+local ParryRadiusSlider
+local ParryAccuracySlider
+
+-- Capture remotes via debug
+task.spawn(function()
+    for _, Value in pairs(getgc()) do
+        if type(Value) == "function" and islclosure(Value) then
+            if debug.getupvalues(Value) then
+                local Protos = debug.getprotos(Value)
+                local Upvalues = debug.getupvalues(Value)
+                local Constants = debug.getconstants(Value)
+                if #Protos == 4 and #Upvalues == 24 and #Constants == 104 then
+                    Remotes[debug.getupvalue(Value, 16)] = debug.getconstant(Value, 62)
+                    Parry_Key = debug.getupvalue(Value, 17)
+                    Remotes[debug.getupvalue(Value, 18)] = debug.getconstant(Value, 64)
+                    Remotes[debug.getupvalue(Value, 19)] = debug.getconstant(Value, 65)
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- Utility Functions
+local function GetBall()
+    for _, Ball in ipairs(workspace.Balls:GetChildren()) do
+        if Ball:GetAttribute("realBall") then
+            return Ball
+        end
+    end
+    return nil
+end
+
+local function ResetConnection()
+    if Connection then
+        Connection:Disconnect()
+        Connection = nil
+    end
+end
+
+-- Track ball changes
+workspace.Balls.ChildAdded:Connect(function()
+    local Ball = GetBall()
+    if not Ball then return end
+    ResetConnection()
+    Connection = Ball:GetAttributeChangedSignal("target"):Connect(function()
+        IsParried = false
+    end)
+end)
+
+-- Enhanced ball position prediction with improved curve detection
+local function PredictBallPosition(Ball, TimeAhead)
+    if not Ball then return Vector3.new(0, 0, 0) end
+    
+    local Velocity = (Ball:FindFirstChild("zoomies") and Ball.zoomies.VectorVelocity) or Vector3.new(0, 0, 0)
+    local Position = Ball.Position
+    
+    -- Apply basic prediction
+    local PredictedPosition = Position + (Velocity * TimeAhead)
+    
+    -- Enhanced curve detection and adjustment
+    if Parry_Type == "Dot" then
+        -- Dot method uses simpler projection
+        return PredictedPosition
+    elseif Parry_Type == "Random" then
+        -- Apply randomization for cases where randomized accuracy is enabled
+        if IsRandomizedAccuracy then
+            local RandomOffset = Vector3.new(
+                (math.random() - 0.5) * (100 - ParryAccuracy) / 50,
+                (math.random() - 0.5) * (100 - ParryAccuracy) / 50,
+                (math.random() - 0.5) * (100 - ParryAccuracy) / 50
+            )
+            return PredictedPosition + RandomOffset
+        end
+    elseif Parry_Type == "Adaptive" then
+        -- Advanced prediction for curved balls
+        local Character = LocalPlayer.Character
+        if Character and Character:FindFirstChild("HumanoidRootPart") then
+            local HRP = Character.HumanoidRootPart
+            local BallToPlayer = (HRP.Position - Position)
+            local Distance = BallToPlayer.Magnitude
+            
+            -- Check if ball is likely to curve
+            if Distance < 50 and Ball:GetAttribute("target") == LocalPlayer.Name then
+                local CurveAdjustment = BallToPlayer.Unit * TimeAhead * 0.6
+                return PredictedPosition + CurveAdjustment
+            end
+        end
+    end
+    
+    return PredictedPosition
+end
+
+-- Function to update parry data based on selected curve type
+local function UpdateParryData(parryType)
+    local Camera = workspace.CurrentCamera
+    local Vector3_Mouse_Location
+    if Last_Input == Enum.UserInputType.MouseButton1 or 
+       Last_Input == Enum.UserInputType.MouseButton2 or 
+       Last_Input == Enum.UserInputType.Keyboard then
+        local Mouse_Location = UserInputService:GetMouseLocation()
+        Vector3_Mouse_Location = {Mouse_Location.X, Mouse_Location.Y}
+    else
+        Vector3_Mouse_Location = {Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2}
+    end
+    
+    local Events = {}
+    for _, v in pairs(Alive:GetChildren()) do
+        if v:FindFirstChild("PrimaryPart") then
+            Events[tostring(v)] = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
+        end
+    end
+
+    local data = nil
+    if parryType == "Custom" then
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}
+    elseif parryType == "Backwards" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Random" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Vector3.new(math.random(-3000,3000), math.random(-3000,3000), math.random(-3000,3000))), Events, Vector3_Mouse_Location}
+    elseif parryType == "Straight" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Up" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.UpVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Right" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Left" then
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}
+    elseif parryType == "Dot" then
+        -- Dot mode uses default orientation for more reliable parry
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}
+    elseif parryType == "Adaptive" then
+        -- Adaptive mode uses dynamic adjustments based on ball trajectory
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}
+    else
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}
+    end
+
+    Parry_Data = data
+end
+
+-- Initialize parry data on startup with default curve type
+UpdateParryData(Parry_Type)
+
+-- Advanced Auto Parry function with special detection features
+local function AutoParry()
+    if not IsAutoParryEnabled then return end
+    
+    local Ball = GetBall()
+    local Character = LocalPlayer.Character
+    if not Ball or not Character then return end
+    
+    local HRP = Character:FindFirstChild("HumanoidRootPart")
+    if not HRP then return end
+    
+    -- Apply accuracy adjustment if randomized accuracy is enabled
+    local effectiveRadius = ParryRadius
+    if IsRandomizedAccuracy then
+        effectiveRadius = ParryRadius * (ParryAccuracy / 100)
+    end
+    
+    local shouldParry = false
+    
+    -- Check if ball is targeting the player
+    if Ball:GetAttribute("target") == LocalPlayer.Name and not IsParried then
+        local PredictedPosition = PredictBallPosition(Ball, PredictionTime)
+        local DistanceToPredicted = (HRP.Position - PredictedPosition).Magnitude
+        
+        if DistanceToPredicted <= effectiveRadius then
+            shouldParry = true
+        end
+        
+        -- Special detection modes
+        if InfinityDetection then
+            -- Detect infinity ability
+            local zoomies = Ball:FindFirstChild("zoomies")
+            if zoomies and zoomies.VectorVelocity.Magnitude > 500 then
+                shouldParry = true
+            end
+        end
+        
+        if DeathSlashDetection and Ball:GetAttribute("type") == "Death" then
+            shouldParry = true
+        end
+        
+        if TimeHoleDetection and Ball:GetAttribute("type") == "TimeHole" then
+            shouldParry = true
+        end
+        
+        if SlashOfFuryDetection and Ball:GetAttribute("type") == "SlashFury" then
+            shouldParry = true
+        end
+        
+        if AntiPhantom then
+            -- Add a small chance to parry even when outside the normal radius
+            if DistanceToPredicted <= effectiveRadius * 1.5 and math.random() < 0.2 then
+                shouldParry = true
+            end
+        end
+        
+        if shouldParry then
+            -- Apply cooldown protection if enabled
+            if CooldownProtection then
+                if tick() - Cooldown < 1 then
+                    return
+                end
+            end
+            
+            -- Execute parry
+            UpdateParryData(Parry_Type)
+            for Remote, Args in pairs(Remotes) do
+                Remote:FireServer(Args, Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])
+            end
+            
+            -- Handle animation fix if enabled
+            if AnimationFix and Humanoid then
+                local Animator = Humanoid:FindFirstChildOfClass("Animator")
+                if Animator then
+                    for _, track in pairs(Animator:GetPlayingAnimationTracks()) do
+                        if track.Name:match("Block") then
+                            track:Stop()
+                        end
+                    end
+                end
+            end
+            
+            -- Apply keypress emulation if enabled
+            if IsKeyPressEnabled then
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+                task.delay(0.05, function()
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+                end)
+            end
+            
+            -- Show notification if enabled
+            if IsNotifyEnabled then
+                StarterGui:SetCore("SendNotification", {
+                    Title = "FemBlade",
+                    Text = "Parried!",
+                    Duration = 1
+                })
+            end
+            
+            IsParried = true
+            Cooldown = tick()
+            Parries = Parries + 1
+            
+            -- Update UI stats if available
+            if ParryCounterText then
+                ParryCounterText.Text = "Parries: " .. Parries
+            end
+        end
+    end
+    
+    -- Reset parried state after cooldown
+    if IsParried and (tick() - Cooldown) >= 1 then
+        IsParried = false
+    end
+end
+
+-- Auto Spam Parry function
+local function AutoSpamParry()
+    if not IsAutoSpamEnabled then return end
+    
+    local Ball = GetBall()
+    if not Ball then return end
+    
+    local Character = LocalPlayer.Character
+    if not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    if Ball:GetAttribute("target") == LocalPlayer.Name then
+        -- Rapidly spam parry when targeted
+        if tick() - Cooldown >= 0.15 then
+            UpdateParryData(Parry_Type)
+            for Remote, Args in pairs(Remotes) do
+                Remote:FireServer(Args, Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])
+            end
+            Cooldown = tick()
+        end
+    end
+end
+
+-- TriggerBot function - instantly hits when targeted
+local function TriggerBot()
+    if not IsTriggerBotEnabled then return end
+    
+    local Ball = GetBall()
+    if not Ball then return end
+    
+    if Ball:GetAttribute("target") == LocalPlayer.Name and tick() - Cooldown >= 0.1 then
+        UpdateParryData(Parry_Type)
+        for Remote, Args in pairs(Remotes) do
+            Remote:FireServer(Args, Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])
+        end
+        Cooldown = tick()
+    end
+end
+
+-- Manual Spam Parry function
+local function ManualSpamParry()
+    if not IsManualSpamEnabled then return end
+    
+    UpdateParryData(Parry_Type)
+    for Remote, Args in pairs(Remotes) do
+        Remote:FireServer(Args, Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])
+    end
+end
+
+-- Auto Ability function
+local function UseAutoAbility()
+    if not AutoAbility then return end
+    
+    local Player = LocalPlayer
+    local PlayerGui = Player:FindFirstChild("PlayerGui")
+    if not PlayerGui then return end
+    
+    local AbilityButton = PlayerGui:FindFirstChild("AbilityButton", true)
+    if not AbilityButton then return end
+    
+    local Ball = GetBall()
+    if not Ball then return end
+    
+    local Character = Player.Character
+    if Character and Ball:GetAttribute("target") == Player.Name then
+        local HRP = Character:FindFirstChild("HumanoidRootPart")
+        if HRP and (Ball.Position - HRP.Position).Magnitude < 20 then
+            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+            task.delay(0.05, function()
+                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
+            end)
+        end
+    end
+end
+
+-- Connect to RunService for the main game loop
+RunService.PreSimulation:Connect(function()
+    AutoParry()
+    AutoSpamParry()
+    TriggerBot()
+    if AutoAbility then UseAutoAbility() end
+end)
+
+-- Bind manual spam to Right Click
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.UserInputType == Enum.UserInputType.MouseButton2 and IsManualSpamEnabled then
+        ManualSpamParry()
+    end
+end)
+
+-- Connect remote event listeners
+ReplicatedStorage.Remotes.ParrySuccess.OnClientEvent:Connect(function()
+    if LocalPlayer.Character.Parent ~= Alive then
+        return
+    end
+end)
+
+ReplicatedStorage.Remotes.ParrySuccessAll.OnClientEvent:Connect(function(_, root)
+    if root.Parent and root.Parent ~= LocalPlayer.Character then
+        if root.Parent.Parent ~= Alive then
+            return
+        end
+    end
+end)
+
+-- UI Creation Functions
+local function CreateUICorner(parent, radius)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, radius or 6)
+    corner.Parent = parent
+    return corner
+end
+
+local function CreateUIStroke(parent, color, thickness)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = color or Colors.Accent
+    stroke.Thickness = thickness or 1
+    stroke.Parent = parent
+    return stroke
+end
+
+local function CreateFrame(name, size, position, bgColor, parent)
+    local frame = Instance.new("Frame")
+    frame.Name = name
+    frame.Size = size
+    frame.Position = position
+    frame.BackgroundColor3 = bgColor or Colors.Container
+    frame.BorderSizePixel = 0
+    frame.Parent = parent
+    return frame
+end
+
+local function CreateToggle(name, description, position, parent, callback)
+    local toggleContainer = CreateFrame(name .. "Container", UDim2.new(1, -20, 0, 50), position, Colors.Container, parent)
+    CreateUICorner(toggleContainer, 6)
+    
+    local toggleLabel = Instance.new("TextLabel")
+    toggleLabel.Name = "Label"
+    toggleLabel.Size = UDim2.new(0.7, 0, 0.5, 0)
+    toggleLabel.Position = UDim2.new(0, 10, 0, 5)
+    toggleLabel.Text = name
+    toggleLabel.TextColor3 = Colors.Text
+    toggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    toggleLabel.TextSize = 14
+    toggleLabel.Font = Enum.Font.GothamBold
+    toggleLabel.BackgroundTransparency = 1
+    toggleLabel.Parent = toggleContainer
+    
+    local toggleDescription = Instance.new("TextLabel")
+    toggleDescription.Name = "Description"
+    toggleDescription.Size = UDim2.new(0.7, 0, 0.5, 0)
+    toggleDescription.Position = UDim2.new(0, 10, 0.5, 0)
+    toggleDescription.Text = description
+    toggleDescription.TextColor3 = Colors.SubText
+    toggleDescription.TextXAlignment = Enum.TextXAlignment.Left
+    toggleDescription.TextSize = 12
+    toggleDescription.Font = Enum.Font.Gotham
+    toggleDescription.BackgroundTransparency = 1
+    toggleDescription.Parent = toggleContainer
+    
+    -- Create toggle indicator
+    local toggleIndicator = CreateFrame("Indicator", UDim2.new(0, 36, 0, 18), UDim2.new(1, -46, 0.5, -9), Colors.Indicator.Disabled, toggleContainer)
+    CreateUICorner(toggleIndicator, 9)
+    
+    local toggleCircle = CreateFrame("Circle", UDim2.new(0, 14, 0, 14), UDim2.new(0, 2, 0.5, -7), Color3.fromRGB(255, 255, 255), toggleIndicator)
+    CreateUICorner(toggleCircle, 7)
+    
+    local enabled = false
+    
+    -- Toggle function
+    local function updateToggle()
+        enabled = not enabled
+        
+        -- Update visuals
+        local targetPos = enabled and UDim2.new(1, -16, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)
+        local targetColor = enabled and Colors.Indicator.Enabled or Colors.Indicator.Disabled
+        
+        -- Animate the toggle
+        TweenService:Create(toggleCircle, TweenInfo.new(0.2), {Position = targetPos}):Play()
+        TweenService:Create(toggleIndicator, TweenInfo.new(0.2), {BackgroundColor3 = targetColor}):Play()
+        
+        -- Call the callback
+        callback(enabled)
+    end
+    
+    -- Make button clickable
+    toggleContainer.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            updateToggle()
+        end
+    end)
+    
+    -- Add hover effect
+    toggleContainer.MouseEnter:Connect(function()
+        TweenService:Create(toggleContainer, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(45, 40, 55)}):Play()
+    end)
+    
+    toggleContainer.MouseLeave:Connect(function()
+        TweenService:Create(toggleContainer, TweenInfo.new(0.2), {BackgroundColor3 = Colors.Container}):Play()
+    end)
+    
+    return {
+        Container = toggleContainer,
+        SetState = function(state)
+            if state ~= enabled then
+                updateToggle()
+            end
+        end
+    }
+end
+
+local function CreateDropdown(name, options, defaultOption, position, parent, callback)
+    local dropdownContainer = CreateFrame(name .. "Container", UDim2.new(1, -20, 0, 60), position, Colors.Container, parent)
+    CreateUICorner(dropdownContainer, 6)
+    
+    local dropdownLabel = Instance.new("TextLabel")
+    dropdownLabel.Name = "Label"
+    dropdownLabel.Size = UDim2.new(1, -20, 0, 20)
+    dropdownLabel.Position = UDim2.new(0, 10, 0, 5)
+    dropdownLabel.Text = name
+    dropdownLabel.TextColor3 = Colors.Text
+    dropdownLabel.TextXAlignment = Enum.TextXAlignment.Left
+    dropdownLabel.TextSize = 14
+    dropdownLabel.Font = Enum.Font.GothamBold
+    dropdownLabel.BackgroundTransparency = 1
+    dropdownLabel.Parent = dropdownContainer
+    
+    local dropdownButton = CreateFrame("DropdownButton", UDim2.new(1, -20, 0, 25), UDim2.new(0, 10, 0, 30), Color3.fromRGB(45, 40, 60), dropdownContainer)
+    CreateUICorner(dropdownButton, 6)
+    
+    local selectedOption = defaultOption or options[1]
+    
+    local dropdownText = Instance.new("TextLabel")
+    dropdownText.Name = "SelectedOption"
+    dropdownText.Size = UDim2.new(1, -30, 1, 0)
+    dropdownText.Position = UDim2.new(0, 10, 0, 0)
+    dropdownText.Text = selectedOption
+    dropdownText.TextColor3 = Colors.Text
+    dropdownText.TextXAlignment = Enum.TextXAlignment.Left
+    dropdownText.TextSize = 12
+    dropdownText.Font = Enum.Font.Gotham
+    dropdownText.BackgroundTransparency = 1
+    dropdownText.Parent = dropdownButton
+    
+    local dropdownArrow = Instance.new("TextLabel")
+    dropdownArrow.Name = "Arrow"
+    dropdownArrow.Size = UDim2.new(0, 20, 1, 0)
+    dropdownArrow.Position = UDim2.new(1, -20, 0, 0)
+    dropdownArrow.Text = "▼"
+    dropdownArrow.TextColor3 = Colors.Text
+    dropdownArrow.TextSize = 12
+    dropdownArrow.Font = Enum.Font.Gotham
+    dropdownArrow.BackgroundTransparency = 1
+    dropdownArrow.Parent = dropdownButton
+    
+    -- Create dropdown list (initially hidden)
+    local dropdownList = CreateFrame("DropdownList", UDim2.new(1, 0, 0, #options * 25), UDim2.new(0, 0, 1, 5), Colors.Container, dropdownButton)
+    dropdownList.Visible = false
+    dropdownList.ZIndex = 10
+    CreateUICorner(dropdownList, 6)
+    
+    -- Add options to dropdown list
+    for i, option in ipairs(options) do
+        local optionButton = CreateFrame("Option_" .. option, UDim2.new(1, 0, 0, 25), UDim2.new(0, 0, 0, (i-1) * 25), Colors.Container, dropdownList)
+        optionButton.ZIndex = 11
+        
+        local optionText = Instance.new("TextLabel")
+        optionText.Size = UDim2.new(1, -20, 1, 0)
+        optionText.Position = UDim2.new(0, 10, 0, 0)
+        optionText.Text = option
+        optionText.TextColor3 = Colors.Text
+        optionText.TextXAlignment = Enum.TextXAlignment.Left
+        optionText.TextSize = 12
+        optionText.Font = Enum.Font.Gotham
+        optionText.BackgroundTransparency = 1
+        optionText.ZIndex = 12
+        optionText.Parent = optionButton
+        
+        -- Option selection
+        optionButton.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                selectedOption = option
+                dropdownText.Text = option
+                dropdownList.Visible = false
+                callback(option)
+            end
+        end)
+        
+        -- Hover effect
+        optionButton.MouseEnter:Connect(function()
+            TweenService:Create(optionButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(55, 50, 70)}):Play()
+        end)
+        
+        optionButton.MouseLeave:Connect(function()
+            TweenService:Create(optionButton, TweenInfo.new(0.2), {BackgroundColor3 = Colors.Container}):Play()
+        end)
+    end
+    
+    -- Toggle dropdown list visibility
+    dropdownButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dropdownList.Visible = not dropdownList.Visible
+        end
+    end)
+    
+    -- Close dropdown when clicking elsewhere
+    UserInputService.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            local mousePos = UserInputService:GetMouseLocation()
+            local dropdownPos = dropdownButton.AbsolutePosition
+            local dropdownSize = dropdownButton.AbsoluteSize
+            
+            if not (mousePos.X >= dropdownPos.X and mousePos.X <= dropdownPos.X + dropdownSize.X and
+                    mousePos.Y >= dropdownPos.Y and mousePos.Y <= dropdownPos.Y + dropdownSize.Y) then
+                dropdownList.Visible = false
+            end
+        end
+    end)
+    
+    -- Add hover effect
+    dropdownButton.MouseEnter:Connect(function()
+        TweenService:Create(dropdownButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(55, 50, 70)}):Play()
+    end)
+    
+    dropdownButton.MouseLeave:Connect(function()
+        TweenService:Create(dropdownButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(45, 40, 60)}):Play()
+    end)
+    
+    return {
+        Container = dropdownContainer,
+        SetOption = function(option)
+            if table.find(options, option) then
+                selectedOption = option
+                dropdownText.Text = option
+                callback(option)
+            end
+        end
+    }
+end
+
+local function CreateSlider(name, min, max, defaultValue, suffix, position, parent, callback)
+    local sliderContainer = CreateFrame(name .. "Container", UDim2.new(1, -20, 0, 60), position, Colors.Container, parent)
+    CreateUICorner(sliderContainer, 6)
+    
+    local sliderLabel = Instance.new("TextLabel")
+    sliderLabel.Name = "Label"
+    sliderLabel.Size = UDim2.new(0.7, 0, 0, 20)
+    sliderLabel.Position = UDim2.new(0, 10, 0, 5)
+    sliderLabel.Text = name
+    sliderLabel.TextColor3 = Colors.Text
+    sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+    sliderLabel.TextSize = 14
+    sliderLabel.Font = Enum.Font.GothamBold
+    sliderLabel.BackgroundTransparency = 1
+    sliderLabel.Parent = sliderContainer
+    
+    local sliderValue = Instance.new("TextLabel")
+    sliderValue.Name = "Value"
+    sliderValue.Size = UDim2.new(0.3, -10, 0, 20)
+    sliderValue.Position = UDim2.new(0.7, 0, 0, 5)
+    sliderValue.Text = defaultValue .. (suffix or "")
+    sliderValue.TextColor3 = Colors.SubText
+    sliderValue.TextXAlignment = Enum.TextXAlignment.Right
+    sliderValue.TextSize = 14
+    sliderValue.Font = Enum.Font.Gotham
+    sliderValue.BackgroundTransparency = 1
+    sliderValue.Parent = sliderContainer
+    
+    local sliderBackground = CreateFrame("SliderBackground", UDim2.new(1, -20, 0, 6), UDim2.new(0, 10, 0, 35), Colors.Slider.Background, sliderContainer)
+    CreateUICorner(sliderBackground, 3)
+    
+    local fillWidth = ((defaultValue - min) / (max - min)) * sliderBackground.Size.X.Offset
+    local sliderFill = CreateFrame("SliderFill", UDim2.new(0, fillWidth, 1, 0), UDim2.new(0, 0, 0, 0), Colors.Slider.Fill, sliderBackground)
+    CreateUICorner(sliderFill, 3)
+    
+    local sliderButton = CreateFrame("SliderButton", UDim2.new(0, 12, 0, 12), UDim2.new(0, fillWidth - 6, 0.5, -6), Colors.Text, sliderBackground)
+    CreateUICorner(sliderButton, 6)
+    
+    -- Slider functionality
+    local dragging = false
+    local currentValue = defaultValue
+    
+    local function updateSlider(input)
+        local parentAbsPos = sliderBackground.AbsolutePosition
+        local parentAbsSize = sliderBackground.AbsoluteSize
+        
+        local relativePos = math.clamp(input.Position.X - parentAbsPos.X, 0, parentAbsSize.X)
+        local relativePosScale = relativePos / parentAbsSize.X
+        
+        local newValue = min + ((max - min) * relativePosScale)
+        newValue = math.floor(newValue * 100) / 100 -- Round to 2 decimal places
+        
+        if newValue ~= currentValue then
+            currentValue = newValue
+            sliderValue.Text = currentValue .. (suffix or "")
+            
+            local fillScale = (currentValue - min) / (max - min)
+            local newFillWidth = fillScale * parentAbsSize.X
+            sliderFill.Size = UDim2.new(0, newFillWidth, 1, 0)
+            sliderButton.Position = UDim2.new(0, newFillWidth - 6, 0.5, -6)
+            
+            callback(currentValue)
+        end
+    end
+    
+    sliderButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+        end
+    end)
+    
+    sliderBackground.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            updateSlider(input)
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            updateSlider(input)
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    
+    -- Add hover effect
+    sliderContainer.MouseEnter:Connect(function()
+        TweenService:Create(sliderContainer, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(45, 40, 55)}):Play()
+    end)
+    
+    sliderContainer.MouseLeave:Connect(function()
+        TweenService:Create(sliderContainer, TweenInfo.new(0.2), {BackgroundColor3 = Colors.Container}):Play()
+    end)
+    
+    return {
+        Container = sliderContainer,
+        SetValue = function(value)
+            local newValue = math.clamp(value, min, max)
+            currentValue = newValue
+            sliderValue.Text = currentValue .. (suffix or "")
+            
+            local fillScale = (currentValue - min) / (max - min)
+            local newFillWidth = fillScale * sliderBackground.AbsoluteSize.X
+            sliderFill.Size = UDim2.new(0, newFillWidth, 1, 0)
+            sliderButton.Position = UDim2.new(0, newFillWidth - 6, 0.5, -6)
+            
+            callback(currentValue)
+        end
+    }
+end
+
+-- Create the main UI
+local function CreateFemBladeUI()
+    -- Main ScreenGui
+    FemBladeUI = Instance.new("ScreenGui")
+    FemBladeUI.Name = "FemBladeUI"
+    FemBladeUI.ResetOnSpawn = false
+    FemBladeUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    FemBladeUI.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    
+    -- Main Frame
+    MainFrame = CreateFrame("MainFrame", UDim2.new(0, 650, 0, 400), UDim2.new(0.5, -325, 0.5, -200), Colors.Background, FemBladeUI)
+    CreateUICorner(MainFrame, 8)
+    
+    -- Add drop shadow effect
+    local Shadow = Instance.new("ImageLabel")
+    Shadow.Name = "Shadow"
+    Shadow.AnchorPoint = Vector2.new(0.5, 0.5)
+    Shadow.BackgroundTransparency = 1
+    Shadow.Position = UDim2.new(0.5, 0, 0.5, 4)
+    Shadow.Size = UDim2.new(1, 10, 1, 10)
+    Shadow.ZIndex = 0
+    Shadow.Image = "rbxassetid://7912134082"
+    Shadow.ImageColor3 = Colors.Shadow
+    Shadow.ImageTransparency = 0.6
+    Shadow.ScaleType = Enum.ScaleType.Slice
+    Shadow.SliceCenter = Rect.new(80, 80, 82, 82)
+    Shadow.SliceScale = 1
+    Shadow.Parent = MainFrame
+    
+    -- Title bar
+    local TitleBar = CreateFrame("TitleBar", UDim2.new(1, 0, 0, 40), UDim2.new(0, 0, 0, 0), Colors.Accent, MainFrame)
+    CreateUICorner(TitleBar, 8)
+    
+    -- Create a special frame to fix corner clipping
+    local CornerFix = CreateFrame("CornerFix", UDim2.new(1, 0, 0, 20), UDim2.new(0, 0, 0, 20), Colors.Accent, TitleBar)
+    
+    -- Title Text
+    local TitleText = Instance.new("TextLabel")
+    TitleText.Name = "TitleText"
+    TitleText.Size = UDim2.new(1, 0, 1, 0)
+    TitleText.Position = UDim2.new(0, 0, 0, 0)
+    TitleText.Text = "FemBlade"
+    TitleText.TextColor3 = Colors.Text
+    TitleText.TextSize = 18
+    TitleText.Font = Enum.Font.GothamBold
+    TitleText.BackgroundTransparency = 1
+    TitleText.Parent = TitleBar
+    
+    -- Make UI draggable
+    local dragging = false
+    local dragInput, mousePos, framePos
+    
+    TitleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            mousePos = input.Position
+            framePos = MainFrame.Position
+        end
+    end)
+    
+    TitleBar.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement and dragging then
+            local delta = input.Position - mousePos
+            MainFrame.Position = UDim2.new(
+                framePos.X.Scale,
+                framePos.X.Offset + delta.X,
+                framePos.Y.Scale,
+                framePos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    
+    -- Create container for content
+    MainContainer = CreateFrame("MainContainer", UDim2.new(0.75, 0, 1, -50), UDim2.new(0.25, 0, 0, 50), Colors.Background, MainFrame)
+    
+    -- Create sidebar
+    SideBar = CreateFrame("SideBar", UDim2.new(0.25, -10, 1, -60), UDim2.new(0, 5, 0, 50), Colors.Container, MainFrame)
+    CreateUICorner(SideBar, 8)
+    
+    -- Add sidebar buttons
+    local buttonHeight = 40
+    local buttonSpacing = 10
+    local buttonWidth = SideBar.Size.X.Offset - 20
+    
+    -- Function to create sidebar buttons
+    local function CreateSidebarButton(name, text, order, callback)
+        local button = CreateFrame(name .. "Button", UDim2.new(0, buttonWidth, 0, buttonHeight), 
+            UDim2.new(0, 10, 0, 10 + (order - 1) * (buttonHeight + buttonSpacing)), Colors.Container, SideBar)
+        CreateUICorner(button, 6)
+        
+        local buttonText = Instance.new("TextLabel")
+        buttonText.Name = "Text"
+        buttonText.Size = UDim2.new(1, 0, 1, 0)
+        buttonText.Text = text
+        buttonText.TextColor3 = Colors.Text
+        buttonText.TextSize = 14
+        buttonText.Font = Enum.Font.GothamBold
+        buttonText.BackgroundTransparency = 1
+        buttonText.Parent = button
+        
+        -- Button functionality
+        button.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 then
+                callback()
+            end
+        end)
+        
+        -- Hover effect
+        button.MouseEnter:Connect(function()
+            TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = Colors.Accent}):Play()
+        end)
+        
+        button.MouseLeave:Connect(function()
+            TweenService:Create(button, TweenInfo.new(0.2), {BackgroundColor3 = Colors.Container}):Play()
+        end)
+        
+        return button
+    end
+    
+    -- Create section containers (initially hidden)
+    AutoParryContainer = CreateFrame("AutoParryContainer", UDim2.new(1, -20, 1, -20), UDim2.new(0, 10, 0, 10), Colors.Background, MainContainer)
+    AutoParryContainer.Visible = false
+    
+    AutoSpamContainer = CreateFrame("AutoSpamContainer", UDim2.new(1, -20, 1, -20), UDim2.new(0, 10, 0, 10), Colors.Background, MainContainer)
+    AutoSpamContainer.Visible = false
+    
+    ManualSpamContainer = CreateFrame("ManualSpamContainer", UDim2.new(1, -20, 1, -20), UDim2.new(0, 10, 0, 10), Colors.Background, MainContainer)
+    ManualSpamContainer.Visible = false
+    
+    TriggerBotContainer = CreateFrame("TriggerBotContainer", UDim2.new(1, -20, 1, -20), UDim2.new(0, 10, 0, 10), Colors.Background, MainContainer)
+    TriggerBotContainer.Visible = false
+    
+    -- Function to hide all containers
+    local function HideAllContainers()
+        AutoParryContainer.Visible = false
+        AutoSpamContainer.Visible = false
+        ManualSpamContainer.Visible = false
+        TriggerBotContainer.Visible = false
+    end
+    
+    -- Create sidebar buttons
+    local autoParryButton = CreateSidebarButton("AutoParry", "Auto Parry", 1, function()
+        HideAllContainers()
+        AutoParryContainer.Visible = true
+    end)
+    
+    local autoSpamButton = CreateSidebarButton("AutoSpam", "Auto Spam", 2, function()
+        HideAllContainers()
+        AutoSpamContainer.Visible = true
+    end)
+    
+    local manualSpamButton = CreateSidebarButton("ManualSpam", "Manual Spam", 3, function()
+        HideAllContainers()
+        ManualSpamContainer.Visible = true
+    end)
+    
+    local triggerBotButton = CreateSidebarButton("TriggerBot", "Trigger Bot", 4, function()
+        HideAllContainers()
+        TriggerBotContainer.Visible = true
+    end)
+    
+    -- Create section content
+    -- Auto Parry Section
+    local apTitle = Instance.new("TextLabel")
+    apTitle.Name = "Title"
+    apTitle.Size = UDim2.new(1, 0, 0, 30)
+    apTitle.Text = "Auto Parry"
+    apTitle.TextColor3 = Colors.Text
+    apTitle.TextSize = 18
+    apTitle.Font = Enum.Font.GothamBold
+    apTitle.BackgroundTransparency = 1
+    apTitle.Parent = AutoParryContainer
+    
+    local apDescription = Instance.new("TextLabel")
+    apDescription.Name = "Description"
+    apDescription.Size = UDim2.new(1, 0, 0, 20)
+    apDescription.Position = UDim2.new(0, 0, 0, 30)
+    apDescription.Text = "Automatically parries incoming balls"
+    apDescription.TextColor3 = Colors.SubText
+    apDescription.TextSize = 14
+    apDescription.Font = Enum.Font.Gotham
+    apDescription.BackgroundTransparency = 1
+    apDescription.Parent = AutoParryContainer
+    
+    -- Stats counter 
+    local ParryCounterText = Instance.new("TextLabel")
+    ParryCounterText.Name = "ParryCounter"
+    ParryCounterText.Size = UDim2.new(1, 0, 0, 20)
+    ParryCounterText.Position = UDim2.new(0, 0, 0, 50)
+    ParryCounterText.Text = "Parries: 0"
+    ParryCounterText.TextColor3 = Colors.Accent
+    ParryCounterText.TextSize = 14
+    ParryCounterText.Font = Enum.Font.GothamBold
+    ParryCounterText.BackgroundTransparency = 1
+    ParryCounterText.Parent = AutoParryContainer
+    
+    -- Auto Parry Toggle
+    local apToggle = CreateToggle("Auto Parry", "Enables automatic parrying", UDim2.new(0, 0, 0, 75), AutoParryContainer, function(state)
+        IsAutoParryEnabled = state
+    end)
+    
+    -- Parry Type Dropdown
+    local apTypeDropdown = CreateDropdown("Parry Type", 
+        {"Dot", "Custom", "Backwards", "Random", "Straight", "Up", "Right", "Left", "Adaptive"}, 
+        "Dot", UDim2.new(0, 0, 0, 135), AutoParryContainer, function(option)
+            Parry_Type = option
+            UpdateParryData(option)
+        end)
+    
+    -- Parry Radius Slider
+    local apRadiusSlider = CreateSlider("Parry Radius", 5, 60, ParryRadius, "", UDim2.new(0, 0, 0, 205), AutoParryContainer, function(value)
+        ParryRadius = value
+    end)
+    
+    -- Prediction Time Slider
+    local apPredictionSlider = CreateSlider("Prediction Time", 0.05, 0.3, PredictionTime, "s", UDim2.new(0, 0, 0, 275), AutoParryContainer, function(value)
+        PredictionTime = value
+    end)
+    
+    -- Special Detection Toggles
+    local apRandomize = CreateToggle("Randomized Accuracy", "Adds some randomness to parries", UDim2.new(0, 0, 0, 345), AutoParryContainer, function(state)
+        IsRandomizedAccuracy = state
+    end)
+    
+    local apNotify = CreateToggle("Notify", "Shows notification on parry", UDim2.new(0, 0, 0, 405), AutoParryContainer, function(state)
+        IsNotifyEnabled = state
+    end)
+    
+    local apKeypress = CreateToggle("Keypress", "Simulates key press on parry", UDim2.new(0, 0, 0, 465), AutoParryContainer, function(state)
+        IsKeyPressEnabled = state
+    end)
+    
+    -- Auto Spam Section
+    local asTitle = Instance.new("TextLabel")
+    asTitle.Name = "Title"
+    asTitle.Size = UDim2.new(1, 0, 0, 30)
+    asTitle.Text = "Auto Spam Parry"
+    asTitle.TextColor3 = Colors.Text
+    asTitle.TextSize = 18
+    asTitle.Font = Enum.Font.GothamBold
+    asTitle.BackgroundTransparency = 1
+    asTitle.Parent = AutoSpamContainer
+    
+    local asDescription = Instance.new("TextLabel")
+    asDescription.Name = "Description"
+    asDescription.Size = UDim2.new(1, 0, 0, 20)
+    asDescription.Position = UDim2.new(0, 0, 0, 30)
+    asDescription.Text = "Rapidly spams parry when ball approaches"
+    asDescription.TextColor3 = Colors.SubText
+    asDescription.TextSize = 14
+    asDescription.Font = Enum.Font.Gotham
+    asDescription.BackgroundTransparency = 1
+    asDescription.Parent = AutoSpamContainer
+    
+    -- Auto Spam Toggle
+    local asToggle = CreateToggle("Auto Spam Parry", "Enables automatic spam parrying", UDim2.new(0, 0, 0, 75), AutoSpamContainer, function(state)
+        IsAutoSpamEnabled = state
+    end)
+    
+    -- Animation Fix Toggle
+    local asAnimFix = CreateToggle("Animation Fix", "Fixes animation issues (DON'T USE ON MOBILE)", UDim2.new(0, 0, 0, 135), AutoSpamContainer, function(state)
+        AnimationFix = state
+    end)
+    
+    -- Manual Spam Section
+    local msTitle = Instance.new("TextLabel")
+    msTitle.Name = "Title"
+    msTitle.Size = UDim2.new(1, 0, 0, 30)
+    msTitle.Text = "Manual Spam Parry"
+    msTitle.TextColor3 = Colors.Text
+    msTitle.TextSize = 18
+    msTitle.Font = Enum.Font.GothamBold
+    msTitle.BackgroundTransparency = 1
+    msTitle.Parent = ManualSpamContainer
+    
+    local msDescription = Instance.new("TextLabel")
+    msDescription.Name = "Description"
+    msDescription.Size = UDim2.new(1, 0, 0, 20)
+    msDescription.Position = UDim2.new(0, 0, 0, 30)
+    msDescription.Text = "Right-click to manually spam parry"
+    msDescription.TextColor3 = Colors.SubText
+    msDescription.TextSize = 14
+    msDescription.Font = Enum.Font.Gotham
+    msDescription.BackgroundTransparency = 1
+    msDescription.Parent = ManualSpamContainer
+    
+    -- Manual Spam Toggle
+    local msToggle = CreateToggle("Manual Spam Parry", "Enables manual spam parrying", UDim2.new(0, 0, 0, 75), ManualSpamContainer, function(state)
+        IsManualSpamEnabled = state
+    end)
+    
+    -- TriggerBot Section
+    local tbTitle = Instance.new("TextLabel")
+    tbTitle.Name = "Title"
+    tbTitle.Size = UDim2.new(1, 0, 0, 30)
+    tbTitle.Text = "Trigger Bot"
+    tbTitle.TextColor3 = Colors.Text
+    tbTitle.TextSize = 18
+    tbTitle.Font = Enum.Font.GothamBold
+    tbTitle.BackgroundTransparency = 1
+    tbTitle.Parent = TriggerBotContainer
+    
+    local tbDescription = Instance.new("TextLabel")
+    tbDescription.Name = "Description"
+    tbDescription.Size = UDim2.new(1, 0, 0, 20)
+    tbDescription.Position = UDim2.new(0, 0, 0, 30)
+    tbDescription.Text = "Instantly parries when targeted"
+    tbDescription.TextColor3 = Colors.SubText
+    tbDescription.TextSize = 14
+    tbDescription.Font = Enum.Font.Gotham
+    tbDescription.BackgroundTransparency = 1
+    tbDescription.Parent = TriggerBotContainer
+    
+    -- TriggerBot Toggle
+    local tbToggle = CreateToggle("Trigger Bot", "Enables automatic triggering", UDim2.new(0, 0, 0, 75), TriggerBotContainer, function(state)
+        IsTriggerBotEnabled = state
+    end)
+    
+    -- Show Auto Parry section by default
+    AutoParryContainer.Visible = true
+    
+    return FemBladeUI
+end
+
+-- Create UI
+CreateFemBladeUI()
+
+-- Show welcome notification
+StarterGui:SetCore("SendNotification", {
+    Title = "FemBlade",
+    Text = "Script loaded successfully!",
+    Duration = 3
+})
+
+print("FemBlade Auto Parry script loaded!")
