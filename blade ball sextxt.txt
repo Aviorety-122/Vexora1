@@ -1,0 +1,861 @@
+-- Load required services
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+local Debris = game:GetService("Debris")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+local Alive = workspace:WaitForChild("Alive")
+local Camera = workspace.CurrentCamera
+
+-- Variables for remote events and parry control
+local Remotes = {}
+local Parry_Key = nil
+local Parry_Data = nil
+local Parry_Type = "Custom"
+local Cooldown = 0
+local IsParried = false
+local Connection = nil
+local IsAutoParryEnabled = false
+local IsAntiCurveEnabled = false
+local ParryRadius = 20
+local PredictionTime = 0.15
+local Parries = 0
+local SuccessRate = 0
+local TotalBalls = 0
+local Last_Input = UserInputService:GetLastInputType()
+
+-- Asset IDs for icons
+local ASSETS = {
+    LOGO = "rbxassetid://14433010855", -- Blade icon
+    SETTINGS = "rbxassetid://3926307971",
+    CLOSE = "rbxassetid://3926305904",
+    TOGGLE_ON = "rbxassetid://4641149554",
+    TOGGLE_OFF = "rbxassetid://4641149554",
+    SLIDER = "rbxassetid://3570695787",
+    DROPDOWN = "rbxassetid://3926305904",
+    PARRY = "rbxassetid://14433010855",
+    CURVE = "rbxassetid://14433010855",
+    STATS = "rbxassetid://3926305904",
+    BLATANT = "rbxassetid://14433010855",
+}
+
+-- Capture remotes via debug (unchanged)
+task.spawn(function()
+    for _, Value in pairs(getgc()) do
+        if type(Value) == "function" and islclosure(Value) then
+            if debug.getupvalues(Value) then
+                local Protos = debug.getprotos(Value)
+                local Upvalues = debug.getupvalues(Value)
+                local Constants = debug.getconstants(Value)
+                if #Protos == 4 and #Upvalues == 24 and #Constants == 104 then
+                    Remotes[debug.getupvalue(Value, 16)] = debug.getconstant(Value, 62)
+                    Parry_Key = debug.getupvalue(Value, 17)
+                    Remotes[debug.getupvalue(Value, 18)] = debug.getconstant(Value, 64)
+                    Remotes[debug.getupvalue(Value, 19)] = debug.getconstant(Value, 65)
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- Enhanced ball utility functions
+local function GetBall()
+    local balls = workspace:FindFirstChild("Balls")
+    if not balls then return nil end
+    for _, Ball in ipairs(balls:GetChildren()) do
+        if Ball:GetAttribute("realBall") then
+            return Ball
+        end
+    end
+    return nil
+end
+
+local function ResetConnection()
+    if Connection then
+        Connection:Disconnect()
+        Connection = nil
+    end
+end
+
+-- Monitor new balls and reset parry state
+workspace:WaitForChild("Balls").ChildAdded:Connect(function()
+    local Ball = GetBall()
+    if not Ball then return end
+    ResetConnection()
+    TotalBalls = TotalBalls + 1
+    Connection = Ball:GetAttributeChangedSignal("target"):Connect(function()
+        IsParried = false
+    end)
+end)
+
+-- Enhanced ball position prediction with anti-curve
+local function PredictBallPosition(Ball, TimeAhead)
+    local Velocity = (Ball:FindFirstChild("zoomies") and Ball.zoomies.VectorVelocity) or Vector3.new(0, 0, 0)
+    
+    -- Basic prediction
+    local PredictedPosition = Ball.Position + Velocity * TimeAhead
+    
+    -- Enhanced prediction with anti-curve
+    if IsAntiCurveEnabled then
+        -- Calculate ball trajectory curve
+        local BallOrientation = Ball.Orientation
+        local CurveDirection = BallOrientation.Y > 0 and 1 or -1
+        local CurveMagnitude = math.abs(BallOrientation.Y) / 90 * 2
+        
+        -- Apply curve correction
+        local CurveOffset = Vector3.new(
+            math.sin(tick() * 2) * CurveMagnitude * CurveDirection,
+            0,
+            math.cos(tick() * 2) * CurveMagnitude * CurveDirection
+        ) * TimeAhead * 5
+        
+        -- Adjust prediction based on curve
+        PredictedPosition = PredictedPosition - CurveOffset
+    end
+    
+    return PredictedPosition
+end
+
+-- Enhanced auto parry with better ball calculation
+local function AutoParry()
+    if not IsAutoParryEnabled then return end
+    local Ball = GetBall()
+    local Character = LocalPlayer.Character
+    if not Ball or not Character then return end
+    local HRP = Character:FindFirstChild("HumanoidRootPart")
+    if not HRP then return end
+
+    if Ball:GetAttribute("target") == LocalPlayer.Name and not IsParried then  
+        local PredictedPosition = PredictBallPosition(Ball, PredictionTime)  
+        local DistanceToPredicted = (HRP.Position - PredictedPosition).Magnitude  
+        
+        -- Calculate optimal parry timing based on distance and velocity
+        local BallVelocity = (Ball:FindFirstChild("zoomies") and Ball.zoomies.VectorVelocity.Magnitude) or 0
+        local OptimalParryDistance = math.min(ParryRadius, ParryRadius * (BallVelocity / 100))
+        
+        if DistanceToPredicted <= OptimalParryDistance then  
+            for Remote, Args in pairs(Remotes) do  
+                Remote:FireServer(Args, Parry_Key, Parry_Data[1], Parry_Data[2], Parry_Data[3], Parry_Data[4])  
+            end  
+            IsParried = true  
+            Cooldown = tick()
+            Parries = Parries + 1
+            SuccessRate = TotalBalls > 0 and math.floor((Parries / TotalBalls) * 100) or 0
+        end  
+    end  
+    if IsParried and (tick() - Cooldown) >= 1 then  
+        IsParried = false  
+    end
+end
+
+RunService.PreSimulation:Connect(AutoParry)
+
+-- Update parry data based on selected curve type
+local function updateParryData(parryType)
+    local Vector3_Mouse_Location
+    if Last_Input == Enum.UserInputType.MouseButton1 or
+       Last_Input == Enum.UserInputType.MouseButton2 or
+       Last_Input == Enum.UserInputType.Keyboard then
+        local Mouse_Location = UserInputService:GetMouseLocation()
+        Vector3_Mouse_Location = {Mouse_Location.X, Mouse_Location.Y}
+    else
+        Vector3_Mouse_Location = {Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2}
+    end
+    local Events = {}
+    for _, v in pairs(Alive:GetChildren()) do
+        if v:FindFirstChild("PrimaryPart") then
+            Events[tostring(v)] = Camera:WorldToScreenPoint(v.PrimaryPart.Position)
+        end
+    end
+
+    local data  
+    if parryType == "Custom" then  
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}  
+    elseif parryType == "Backwards" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Random" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Vector3.new(math.random(-3000,3000), math.random(-3000,3000), math.random(-3000,3000))), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Straight" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.LookVector * 1000)), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Up" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.UpVector * 1000)), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Right" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position + (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}  
+    elseif parryType == "Left" then  
+        data = {0, CFrame.new(Camera.CFrame.Position, Camera.CFrame.Position - (Camera.CFrame.RightVector * 1000)), Events, Vector3_Mouse_Location}  
+    else  
+        data = {0, Camera.CFrame, Events, Vector3_Mouse_Location}  
+    end  
+
+    Parry_Data = data
+end
+
+-- Initialize parry data
+updateParryData(Parry_Type)
+
+-- Remote event listeners
+if ReplicatedStorage:FindFirstChild("Remotes") then
+    if ReplicatedStorage.Remotes:FindFirstChild("ParrySuccess") then
+        ReplicatedStorage.Remotes.ParrySuccess.OnClientEvent:Connect(function()
+            if LocalPlayer.Character and LocalPlayer.Character.Parent ~= Alive then
+                return
+            end
+        end)
+    end
+
+    if ReplicatedStorage.Remotes:FindFirstChild("ParrySuccessAll") then
+        ReplicatedStorage.Remotes.ParrySuccessAll.OnClientEvent:Connect(function(_, root)
+            if root and root.Parent and root.Parent ~= LocalPlayer.Character then
+                if root.Parent.Parent ~= Alive then
+                    return
+                end
+            end
+        end)
+    end
+end
+
+-- Create a new modern UI with hyper-stylized design
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "HyperUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+
+-- Create a blur effect
+local BlurEffect = Instance.new("BlurEffect")
+BlurEffect.Size = 0
+BlurEffect.Parent = game.Lighting
+
+-- Main container
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainContainer"
+MainFrame.Size = UDim2.new(0, 450, 0, 350)
+MainFrame.Position = UDim2.new(0.5, -225, 0.5, -175)
+MainFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 20)
+MainFrame.BorderSizePixel = 0
+MainFrame.ClipsDescendants = true
+MainFrame.Parent = ScreenGui
+
+-- Apply rounded corners
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 10)
+UICorner.Parent = MainFrame
+
+-- Add a stroke
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Color = Color3.fromRGB(255, 0, 0)
+UIStroke.Thickness = 2
+UIStroke.Transparency = 0.5
+UIStroke.Parent = MainFrame
+
+-- Add a gradient background
+local BackgroundImage = Instance.new("ImageLabel")
+BackgroundImage.Size = UDim2.new(1, 0, 1, 0)
+BackgroundImage.BackgroundTransparency = 1
+BackgroundImage.Image = "rbxassetid://13913249687" -- Dark abstract background
+BackgroundImage.ImageTransparency = 0.8
+BackgroundImage.ScaleType = Enum.ScaleType.Crop
+BackgroundImage.Parent = MainFrame
+
+-- Header
+local Header = Instance.new("Frame")
+Header.Name = "Header"
+Header.Size = UDim2.new(1, 0, 0, 50)
+Header.BackgroundColor3 = Color3.fromRGB(10, 10, 15)
+Header.BackgroundTransparency = 0.2
+Header.BorderSizePixel = 0
+Header.Parent = MainFrame
+
+local HeaderCorner = Instance.new("UICorner")
+HeaderCorner.CornerRadius = UDim.new(0, 10)
+HeaderCorner.Parent = Header
+
+-- Title
+local Title = Instance.new("TextLabel")
+Title.Name = "Title"
+Title.Size = UDim2.new(1, -100, 1, 0)
+Title.Position = UDim2.new(0, 50, 0, 0)
+Title.BackgroundTransparency = 1
+Title.Text = "HYPER BLADE"
+Title.TextColor3 = Color3.fromRGB(255, 0, 0)
+Title.TextSize = 24
+Title.Font = Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Parent = Header
+
+-- Logo
+local Logo = Instance.new("ImageLabel")
+Logo.Name = "Logo"
+Logo.Size = UDim2.new(0, 30, 0, 30)
+Logo.Position = UDim2.new(0, 10, 0.5, -15)
+Logo.BackgroundTransparency = 1
+Logo.Image = ASSETS.LOGO
+Logo.ImageColor3 = Color3.fromRGB(255, 0, 0)
+Logo.Parent = Header
+
+-- Close button
+local CloseButton = Instance.new("ImageButton")
+CloseButton.Name = "CloseButton"
+CloseButton.Size = UDim2.new(0, 30, 0, 30)
+CloseButton.Position = UDim2.new(1, -40, 0.5, -15)
+CloseButton.BackgroundTransparency = 1
+CloseButton.Image = ASSETS.CLOSE
+CloseButton.ImageRectOffset = Vector2.new(284, 4)
+CloseButton.ImageRectSize = Vector2.new(24, 24)
+CloseButton.ImageColor3 = Color3.fromRGB(255, 0, 0)
+CloseButton.Parent = Header
+
+-- Content container
+local ContentContainer = Instance.new("Frame")
+ContentContainer.Name = "ContentContainer"
+ContentContainer.Size = UDim2.new(1, -20, 1, -60)
+ContentContainer.Position = UDim2.new(0, 10, 0, 55)
+ContentContainer.BackgroundTransparency = 1
+ContentContainer.Parent = MainFrame
+
+-- Blatant section header
+local BlatantHeader = Instance.new("Frame")
+BlatantHeader.Name = "BlatantHeader"
+BlatantHeader.Size = UDim2.new(1, 0, 0, 40)
+BlatantHeader.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+BlatantHeader.BackgroundTransparency = 0.5
+BlatantHeader.BorderSizePixel = 0
+BlatantHeader.Parent = ContentContainer
+
+local BlatantHeaderCorner = Instance.new("UICorner")
+BlatantHeaderCorner.CornerRadius = UDim.new(0, 8)
+BlatantHeaderCorner.Parent = BlatantHeader
+
+local BlatantIcon = Instance.new("ImageLabel")
+BlatantIcon.Size = UDim2.new(0, 24, 0, 24)
+BlatantIcon.Position = UDim2.new(0, 10, 0.5, -12)
+BlatantIcon.BackgroundTransparency = 1
+BlatantIcon.Image = ASSETS.BLATANT
+BlatantIcon.ImageColor3 = Color3.fromRGB(255, 0, 0)
+BlatantIcon.Parent = BlatantHeader
+
+local BlatantTitle = Instance.new("TextLabel")
+BlatantTitle.Size = UDim2.new(1, -50, 1, 0)
+BlatantTitle.Position = UDim2.new(0, 40, 0, 0)
+BlatantTitle.BackgroundTransparency = 1
+BlatantTitle.Text = "BLATANT"
+BlatantTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+BlatantTitle.TextSize = 18
+BlatantTitle.Font = Enum.Font.GothamBold
+BlatantTitle.TextXAlignment = Enum.TextXAlignment.Left
+BlatantTitle.Parent = BlatantHeader
+
+-- Stats panel
+local StatsPanel = Instance.new("Frame")
+StatsPanel.Name = "StatsPanel"
+StatsPanel.Size = UDim2.new(1, 0, 0, 80)
+StatsPanel.Position = UDim2.new(0, 0, 0, 50)
+StatsPanel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+StatsPanel.BackgroundTransparency = 0.5
+StatsPanel.BorderSizePixel = 0
+StatsPanel.Parent = ContentContainer
+
+local StatsPanelCorner = Instance.new("UICorner")
+StatsPanelCorner.CornerRadius = UDim.new(0, 8)
+StatsPanelCorner.Parent = StatsPanel
+
+-- Create stat displays
+local function CreateStatDisplay(parent, title, value, position)
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(0.33, -10, 1, -20)
+    Container.Position = position
+    Container.BackgroundTransparency = 1
+    Container.Parent = parent
+    
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, 0, 0, 20)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = title
+    TitleLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+    TitleLabel.TextSize = 12
+    TitleLabel.Font = Enum.Font.GothamMedium
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Center
+    TitleLabel.Parent = Container
+    
+    local ValueLabel = Instance.new("TextLabel")
+    ValueLabel.Name = "Value"
+    ValueLabel.Size = UDim2.new(1, 0, 0, 30)
+    ValueLabel.Position = UDim2.new(0, 0, 0, 25)
+    ValueLabel.BackgroundTransparency = 1
+    ValueLabel.Text = value
+    ValueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ValueLabel.TextSize = 20
+    ValueLabel.Font = Enum.Font.GothamBold
+    ValueLabel.TextXAlignment = Enum.TextXAlignment.Center
+    ValueLabel.Parent = Container
+    
+    return Container, ValueLabel
+end
+
+local StatusContainer, StatusValue = CreateStatDisplay(StatsPanel, "STATUS", "INACTIVE", UDim2.new(0, 5, 0, 10))
+local ParriesContainer, ParriesValue = CreateStatDisplay(StatsPanel, "PARRIES", "0", UDim2.new(0.33, 5, 0, 10))
+local SuccessContainer, SuccessValue = CreateStatDisplay(StatsPanel, "SUCCESS RATE", "0%", UDim2.new(0.66, 5, 0, 10))
+
+-- Controls panel
+local ControlsPanel = Instance.new("Frame")
+ControlsPanel.Name = "ControlsPanel"
+ControlsPanel.Size = UDim2.new(1, 0, 0, 160)
+ControlsPanel.Position = UDim2.new(0, 0, 0, 140)
+ControlsPanel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+ControlsPanel.BackgroundTransparency = 0.5
+ControlsPanel.BorderSizePixel = 0
+ControlsPanel.Parent = ContentContainer
+
+local ControlsPanelCorner = Instance.new("UICorner")
+ControlsPanelCorner.CornerRadius = UDim.new(0, 8)
+ControlsPanelCorner.Parent = ControlsPanel
+
+-- Create a toggle switch with image
+local function CreateToggleSwitch(parent, title, description, position, defaultState, iconId)
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, -20, 0, 60)
+    Container.Position = position
+    Container.BackgroundTransparency = 1
+    Container.Parent = parent
+    
+    local Icon = Instance.new("ImageLabel")
+    Icon.Size = UDim2.new(0, 24, 0, 24)
+    Icon.Position = UDim2.new(0, 0, 0, 0)
+    Icon.BackgroundTransparency = 1
+    Icon.Image = iconId
+    Icon.ImageColor3 = Color3.fromRGB(255, 0, 0)
+    Icon.Parent = Container
+    
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, -90, 0, 20)
+    TitleLabel.Position = UDim2.new(0, 30, 0, 0)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = title
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleLabel.TextSize = 16
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = Container
+    
+    local DescriptionLabel = Instance.new("TextLabel")
+    DescriptionLabel.Size = UDim2.new(1, -90, 0, 20)
+    DescriptionLabel.Position = UDim2.new(0, 30, 0, 25)
+    DescriptionLabel.BackgroundTransparency = 1
+    DescriptionLabel.Text = description
+    DescriptionLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+    DescriptionLabel.TextSize = 12
+    DescriptionLabel.Font = Enum.Font.Gotham
+    DescriptionLabel.TextXAlignment = Enum.TextXAlignment.Left
+    DescriptionLabel.TextWrapped = true
+    DescriptionLabel.Parent = Container
+    
+    local ToggleButton = Instance.new("ImageButton")
+    ToggleButton.Size = UDim2.new(0, 50, 0, 26)
+    ToggleButton.Position = UDim2.new(1, -50, 0, 7)
+    ToggleButton.BackgroundColor3 = defaultState and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(40, 40, 45)
+    ToggleButton.BorderSizePixel = 0
+    ToggleButton.Image = ""
+    ToggleButton.Parent = Container
+    
+    local ToggleCorner = Instance.new("UICorner")
+    ToggleCorner.CornerRadius = UDim.new(1, 0)
+    ToggleCorner.Parent = ToggleButton
+    
+    local ToggleCircle = Instance.new("Frame")
+    ToggleCircle.Size = UDim2.new(0, 20, 0, 20)
+    ToggleCircle.Position = defaultState and UDim2.new(0, 27, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
+    ToggleCircle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    ToggleCircle.BorderSizePixel = 0
+    ToggleCircle.Parent = ToggleButton
+    
+    local ToggleCircleCorner = Instance.new("UICorner")
+    ToggleCircleCorner.CornerRadius = UDim.new(1, 0)
+    ToggleCircleCorner.Parent = ToggleCircle
+    
+    local isEnabled = defaultState or false
+    
+    local function updateToggle()
+        if isEnabled then
+            TweenService:Create(ToggleCircle, TweenInfo.new(0.2), {
+                Position = UDim2.new(0, 27, 0.5, -10),
+            }):Play()
+            TweenService:Create(ToggleButton, TweenInfo.new(0.2), {
+                BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+            }):Play()
+        else
+            TweenService:Create(ToggleCircle, TweenInfo.new(0.2), {
+                Position = UDim2.new(0, 3, 0.5, -10),
+            }):Play()
+            TweenService:Create(ToggleButton, TweenInfo.new(0.2), {
+                BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+            }):Play()
+        end
+    end
+    
+    updateToggle()
+    
+    ToggleButton.MouseButton1Click:Connect(function()
+        isEnabled = not isEnabled
+        updateToggle()
+        
+        if title == "Auto Parry" then
+            IsAutoParryEnabled = isEnabled
+            StatusValue.Text = isEnabled and "ACTIVE" or "INACTIVE"
+            StatusValue.TextColor3 = isEnabled and Color3.fromRGB(255, 0, 0) or Color3.fromRGB(150, 150, 150)
+        elseif title == "Anti Curve" then
+            IsAntiCurveEnabled = isEnabled
+        end
+    end)
+    
+    return Container, ToggleButton, isEnabled
+end
+
+-- Create a slider with custom styling
+local function CreateSlider(parent, title, min, max, default, position, iconId)
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, -20, 0, 60)
+    Container.Position = position
+    Container.BackgroundTransparency = 1
+    Container.Parent = parent
+    
+    local Icon = Instance.new("ImageLabel")
+    Icon.Size = UDim2.new(0, 24, 0, 24)
+    Icon.Position = UDim2.new(0, 0, 0, 0)
+    Icon.BackgroundTransparency = 1
+    Icon.Image = iconId
+    Icon.ImageColor3 = Color3.fromRGB(255, 0, 0)
+    Icon.Parent = Container
+    
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(0.7, -30, 0, 20)
+    TitleLabel.Position = UDim2.new(0, 30, 0, 0)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = title
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleLabel.TextSize = 16
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = Container
+    
+    local ValueLabel = Instance.new("TextLabel")
+    ValueLabel.Name = "Value"
+    ValueLabel.Size = UDim2.new(0.3, 0, 0, 20)
+    ValueLabel.Position = UDim2.new(0.7, 0, 0, 0)
+    ValueLabel.BackgroundTransparency = 1
+    ValueLabel.Text = tostring(default)
+    ValueLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+    ValueLabel.TextSize = 16
+    ValueLabel.Font = Enum.Font.GothamBold
+    ValueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    ValueLabel.Parent = Container
+    
+    local SliderBG = Instance.new("Frame")
+    SliderBG.Size = UDim2.new(1, 0, 0, 8)
+    SliderBG.Position = UDim2.new(0, 0, 0, 30)
+    SliderBG.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+    SliderBG.BorderSizePixel = 0
+    SliderBG.Parent = Container
+    
+    local SliderBGCorner = Instance.new("UICorner")
+    SliderBGCorner.CornerRadius = UDim.new(1, 0)
+    SliderBGCorner.Parent = SliderBG
+    
+    local SliderFill = Instance.new("Frame")
+    SliderFill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+    SliderFill.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    SliderFill.BorderSizePixel = 0
+    SliderFill.Parent = SliderBG
+    
+    local SliderFillCorner = Instance.new("UICorner")
+    SliderFillCorner.CornerRadius = UDim.new(1, 0)
+    SliderFillCorner.Parent = SliderFill
+    
+    local SliderKnob = Instance.new("Frame")
+    SliderKnob.Size = UDim2.new(0, 16, 0, 16)
+    SliderKnob.Position = UDim2.new((default - min) / (max - min), -8, 0.5, -8)
+    SliderKnob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    SliderKnob.BorderSizePixel = 0
+    SliderKnob.ZIndex = 2
+    SliderKnob.Parent = SliderBG
+    
+    local SliderKnobCorner = Instance.new("UICorner")
+    SliderKnobCorner.CornerRadius = UDim.new(1, 0)
+    SliderKnobCorner.Parent = SliderKnob
+    
+    local SliderButton = Instance.new("TextButton")
+    SliderButton.Size = UDim2.new(1, 0, 1, 0)
+    SliderButton.BackgroundTransparency = 1
+    SliderButton.Text = ""
+    SliderButton.ZIndex = 3
+    SliderButton.Parent = SliderBG
+    
+    local value = default
+    
+    local function updateSlider(input)
+        local pos = math.clamp((input.Position.X - SliderBG.AbsolutePosition.X) / SliderBG.AbsoluteSize.X, 0, 1)
+        value = math.floor(min + ((max - min) * pos))
+        ValueLabel.Text = tostring(value)
+        SliderFill.Size = UDim2.new(pos, 0, 1, 0)
+        SliderKnob.Position = UDim2.new(pos, -8, 0.5, -8)
+        
+        if title == "Parry Distance" then
+            ParryRadius = value
+        elseif title == "Prediction Time" then
+            PredictionTime = value / 100
+        end
+    end
+    
+    SliderButton.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            local connection
+            connection = RunService.RenderStepped:Connect(function()
+                updateSlider(input)
+            end)
+            
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    connection:Disconnect()
+                end
+            end)
+        end
+    end)
+    
+    SliderButton.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            updateSlider(input)
+        end
+    end)
+    
+    return Container, value
+end
+
+-- Create dropdown with custom styling
+local function CreateDropdown(parent, title, options, defaultOption, position, iconId)
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, -20, 0, 60)
+    Container.Position = position
+    Container.BackgroundTransparency = 1
+    Container.Parent = parent
+    
+    local Icon = Instance.new("ImageLabel")
+    Icon.Size = UDim2.new(0, 24, 0, 24)
+    Icon.Position = UDim2.new(0, 0, 0, 0)
+    Icon.BackgroundTransparency = 1
+    Icon.Image = iconId
+    Icon.ImageColor3 = Color3.fromRGB(255, 0, 0)
+    Icon.Parent = Container
+    
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Size = UDim2.new(1, -30, 0, 20)
+    TitleLabel.Position = UDim2.new(0, 30, 0, 0)
+    TitleLabel.BackgroundTransparency = 1
+    TitleLabel.Text = title
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleLabel.TextSize = 16
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TitleLabel.Parent = Container
+    
+    local DropdownButton = Instance.new("TextButton")
+    DropdownButton.Size = UDim2.new(1, 0, 0, 30)
+    DropdownButton.Position = UDim2.new(0, 0, 0, 25)
+    DropdownButton.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    DropdownButton.BorderSizePixel = 0
+    DropdownButton.Text = defaultOption
+    DropdownButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    DropdownButton.TextSize = 14
+    DropdownButton.Font = Enum.Font.Gotham
+    DropdownButton.Parent = Container
+    
+    local DropdownCorner = Instance.new("UICorner")
+    DropdownCorner.CornerRadius = UDim.new(0, 6)
+    DropdownCorner.Parent = DropdownButton
+    
+    local DropdownArrow = Instance.new("ImageLabel")
+    DropdownArrow.Size = UDim2.new(0, 16, 0, 16)
+    DropdownArrow.Position = UDim2.new(1, -25, 0.5, -8)
+    DropdownArrow.BackgroundTransparency = 1
+    DropdownArrow.Image = ASSETS.DROPDOWN
+    DropdownArrow.ImageRectOffset = Vector2.new(324, 524)
+    DropdownArrow.ImageRectSize = Vector2.new(36, 36)
+    DropdownArrow.ImageColor3 = Color3.fromRGB(255, 0, 0)
+    DropdownArrow.Parent = DropdownButton
+    
+    local DropdownMenu = Instance.new("Frame")
+    DropdownMenu.Size = UDim2.new(1, 0, 0, #options * 30)
+    DropdownMenu.Position = UDim2.new(0, 0, 1, 5)
+    DropdownMenu.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    DropdownMenu.BorderSizePixel = 0
+    DropdownMenu.Visible = false
+    DropdownMenu.ZIndex = 10
+    DropdownMenu.Parent = DropdownButton
+    
+    local DropdownMenuCorner = Instance.new("UICorner")
+    DropdownMenuCorner.CornerRadius = UDim.new(0, 6)
+    DropdownMenuCorner.Parent = DropdownMenu
+    
+    local selectedOption = defaultOption
+    
+    for i, option in ipairs(options) do
+        local OptionButton = Instance.new("TextButton")
+        OptionButton.Size = UDim2.new(1, 0, 0, 30)
+        OptionButton.Position = UDim2.new(0, 0, 0, (i-1) * 30)
+        OptionButton.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+        OptionButton.BackgroundTransparency = 0
+        OptionButton.BorderSizePixel = 0
+        OptionButton.Text = option
+        OptionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+        OptionButton.TextSize = 14
+        OptionButton.Font = Enum.Font.Gotham
+        OptionButton.ZIndex = 10
+        OptionButton.Parent = DropdownMenu
+        
+        OptionButton.MouseButton1Click:Connect(function()
+            selectedOption = option
+            DropdownButton.Text = option
+            DropdownMenu.Visible = false
+            
+            if title == "Parry Type" then
+                Parry_Type = option
+                updateParryData(option)
+            end
+        end)
+    end
+    
+    DropdownButton.MouseButton1Click:Connect(function()
+        DropdownMenu.Visible = not DropdownMenu.Visible
+    end)
+    
+    return Container, DropdownButton, selectedOption
+end
+
+-- Add controls to the panel
+local AutoParryToggle, AutoParryButton = CreateToggleSwitch(ControlsPanel, "Auto Parry", "Automatically parries incoming balls", UDim2.new(0, 10, 0, 10), false, ASSETS.PARRY)
+local AntiCurveToggle, AntiCurveButton = CreateToggleSwitch(ControlsPanel, "Anti Curve", "Counters curved ball trajectories", UDim2.new(0, 10, 0, 80), false, ASSETS.CURVE)
+
+-- Add settings panel
+local SettingsPanel = Instance.new("Frame")
+SettingsPanel.Name = "SettingsPanel"
+SettingsPanel.Size = UDim2.new(1, 0, 0, 220)
+SettingsPanel.Position = UDim2.new(0, 0, 0, 310)
+SettingsPanel.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+SettingsPanel.BackgroundTransparency = 0.5
+SettingsPanel.BorderSizePixel = 0
+SettingsPanel.Parent = ContentContainer
+
+local SettingsPanelCorner = Instance.new("UICorner")
+SettingsPanelCorner.CornerRadius = UDim.new(0, 8)
+SettingsPanelCorner.Parent = SettingsPanel
+
+-- Add sliders and dropdown to settings panel
+local ParryDistanceSlider = CreateSlider(SettingsPanel, "Parry Distance", 5, 30, ParryRadius, UDim2.new(0, 10, 0, 10), ASSETS.SETTINGS)
+local PredictionTimeSlider = CreateSlider(SettingsPanel, "Prediction Time", 5, 30, PredictionTime * 100, UDim2.new(0, 10, 0, 80), ASSETS.SETTINGS)
+local ParryTypeDropdown = CreateDropdown(
+    SettingsPanel, 
+    "Parry Type", 
+    {"Custom", "Straight", "Backwards", "Random", "Up", "Right", "Left"}, 
+    Parry_Type, 
+    UDim2.new(0, 10, 0, 150),
+    ASSETS.SETTINGS
+)
+
+-- Update stats display
+RunService.Heartbeat:Connect(function()
+    ParriesValue.Text = tostring(Parries)
+    SuccessValue.Text = tostring(SuccessRate) .. "%"
+    
+    -- Update status color based on auto parry state
+    if IsAutoParryEnabled then
+        StatusValue.TextColor3 = Color3.fromRGB(255, 0, 0)
+    else
+        StatusValue.TextColor3 = Color3.fromRGB(150, 150, 150)
+    end
+end)
+
+-- Make the UI draggable
+local UserInputService = game:GetService("UserInputService")
+local dragging
+local dragInput
+local dragStart
+local startPos
+
+local function update(input)
+    local delta = input.Position - dragStart
+    MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+Header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = MainFrame.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+Header.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        update(input)
+    end
+end)
+
+-- Close button functionality
+CloseButton.MouseButton1Click:Connect(function()
+    -- Fade out animation
+    TweenService:Create(MainFrame, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play()
+    TweenService:Create(BlurEffect, TweenInfo.new(0.3), {Size = 0}):Play()
+    
+    -- Wait for animation to complete
+    task.delay(0.3, function()
+        ScreenGui:Destroy()
+        BlurEffect:Destroy()
+    end)
+end)
+
+-- Add hover effects
+CloseButton.MouseEnter:Connect(function()
+    TweenService:Create(CloseButton, TweenInfo.new(0.2), {ImageTransparency = 0.5}):Play()
+end)
+
+CloseButton.MouseLeave:Connect(function()
+    TweenService:Create(CloseButton, TweenInfo.new(0.2), {ImageTransparency = 0}):Play()
+end)
+
+-- Fade in animation
+MainFrame.BackgroundTransparency = 1
+TweenService:Create(MainFrame, TweenInfo.new(0.5), {BackgroundTransparency = 0}):Play()
+TweenService:Create(BlurEffect, TweenInfo.new(0.5), {Size = 10}):Play()
+
+-- Add a version label
+local VersionLabel = Instance.new("TextLabel")
+VersionLabel.Size = UDim2.new(0, 100, 0, 20)
+VersionLabel.Position = UDim2.new(1, -110, 1, -25)
+VersionLabel.BackgroundTransparency = 1
+VersionLabel.Text = "HYPER v2.0"
+VersionLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
+VersionLabel.TextSize = 12
+VersionLabel.Font = Enum.Font.GothamBold
+VersionLabel.TextXAlignment = Enum.TextXAlignment.Right
+VersionLabel.Parent = MainFrame
+
+-- Initialize parry data
+updateParryData(Parry_Type)
