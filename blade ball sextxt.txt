@@ -1,0 +1,634 @@
+-- Simple Blade Ball Auto-Parry Script with Basic UI
+-- This script is designed to run in Roblox Blade Ball game environment
+
+-- Mock environment for testing outside Roblox
+if not game then
+    print("Creating mock environment for testing purposes")
+    game = {
+        GetService = function(_, serviceName)
+            return {
+                PreSimulation = {
+                    Connect = function() return {Disconnect = function() end} end
+                },
+                LocalPlayer = {
+                    Character = {
+                        HumanoidRootPart = {Position = {X=0, Y=0, Z=0}}
+                    },
+                    PlayerGui = {},
+                    CharacterAdded = {
+                        Connect = function() end,
+                        Wait = function() return {HumanoidRootPart = {}, Humanoid = {}} end
+                    }
+                },
+                InputBegan = {
+                    Connect = function() end
+                },
+                Remotes = {
+                    ParryButtonPress = {
+                        Fire = function() print("Parry button pressed") end
+                    }
+                },
+                SetCore = function() end
+            }
+        end
+    }
+    
+    workspace = {
+        CurrentCamera = {},
+        Balls = {
+            GetChildren = function() return {} end,
+            WaitForChild = function() return {GetChildren = function() return {} end} end
+        },
+        Alive = {
+            GetChildren = function() return {} end
+        },
+        WaitForChild = function(_, name)
+            if name == "Balls" then return workspace.Balls end
+            if name == "Alive" then return workspace.Alive end
+            return {}
+        end
+    }
+    
+    -- Define Vector3 for testing
+    Vector3 = {
+        new = function(x,y,z) return {x=x,y=z,z=z, Magnitude=1, Unit={Dot=function() return 1 end}} end
+    }
+    
+    -- Mock Enum
+    Enum = {
+        ZIndexBehavior = {Sibling = 0},
+        Font = {Gotham = 0, GothamBold = 1}
+    }
+    
+    -- Mock Color3
+    Color3 = {
+        fromRGB = function(r,g,b) return {r=r/255, g=g/255, b=b/255} end
+    }
+    
+    -- Mock UDim2
+    UDim2 = {
+        new = function(x,xp,y,yp) return {X=x, XOffset=xp, Y=y, YOffset=yp} end
+    }
+    
+    -- Mock Instance
+    Instance = {
+        new = function(className)
+            return {
+                Name = "",
+                ClassName = className,
+                Size = UDim2.new(0,0,0,0),
+                Position = UDim2.new(0,0,0,0),
+                BackgroundColor3 = Color3.fromRGB(255,255,255),
+                TextColor3 = Color3.fromRGB(0,0,0),
+                BorderSizePixel = 0,
+                Text = "",
+                Font = Enum.Font.Gotham,
+                TextSize = 14,
+                Visible = true,
+                Active = false,
+                Draggable = false,
+                Parent = nil,
+                
+                MouseButton1Click = {
+                    Connect = function(_, callback) end
+                },
+                
+                GetChildren = function() return {} end,
+                Destroy = function() end
+            }
+        end
+    }
+    
+    -- Other required globals
+    math = math or {}
+    math.clamp = function(x, min, max) return math.min(math.max(x, min), max) end
+    
+    task = {
+        spawn = function(f) f() end,
+        wait = function() end
+    }
+    
+    table = table or {}
+    
+    getgc = function() return {} end
+    islclosure = function() return false end
+    debug = {
+        getupvalues = function() return {} end,
+        getprotos = function() return {} end,
+        getconstants = function() return {} end,
+        getupvalue = function() return nil end,
+        getconstant = function() return nil end
+    }
+    
+    os = os or {}
+    os.clock = function() return os.time() end
+    
+    print("Mock environment created")
+end
+
+print("--- Blade Ball Auto-Parry Script ---")
+print("Loading script...")
+
+-- Services
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local StarterGui = game:GetService("StarterGui")
+
+-- Variable declarations
+local AutoParryButton
+local ParryModeButton
+local StatusLabel
+local StatsLabel
+local RadiusLabel
+
+-- Local Player Variables
+local LocalPlayer = Players.LocalPlayer
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid, HumanoidRootPart
+
+-- Function to ensure character components are available
+local function SetupCharacter(Char)
+    Character = Char
+    Humanoid = Character:WaitForChild("Humanoid")
+    HumanoidRootPart = Character:WaitForChild("HumanoidRootPart")
+    print("Character setup complete")
+end
+
+-- Try to set up character immediately
+pcall(function()
+    SetupCharacter(Character)
+end)
+
+-- Setup player character added connection
+LocalPlayer.CharacterAdded:Connect(SetupCharacter)
+
+-- Environment Variables
+local Camera = workspace.CurrentCamera
+local Balls = workspace:WaitForChild("Balls")
+local Alive = workspace:WaitForChild("Alive")
+
+-- Auto-Parry Configuration
+local IsAutoParryEnabled = false
+local ParryRadius = 15
+local BaseReactionTime = 0.075 -- Base prediction time
+local PredictionTime = BaseReactionTime
+local AutoParryMode = "Advanced" -- Options: Advanced, Aggressive, Conservative
+local Cooldown = 0
+local LastParryTime = 0
+local DebugMode = false
+
+-- Ball Tracking Variables
+local BallSpeed = 0
+local BallDistance = 0
+local LastBallPosition = Vector3.new(0, 0, 0)
+local LastBallVelocity = Vector3.new(0, 0, 0)
+local PreviousVelocities = {}
+local MaxVelocitySamples = 10
+
+-- Stats
+local SuccessfulParries = 0
+local FailedParries = 0
+
+-- Get remote events for parry
+local Remotes = {}
+local Parry_Key = nil
+local Connection = nil
+
+-- Find the necessary remotes and key using closure scanning
+task.spawn(function()
+    print("Looking for parry remotes...")
+    
+    for _, Value in pairs(getgc()) do
+        if type(Value) == "function" and islclosure(Value) then
+            if debug.getupvalues(Value) then
+                local Protos = debug.getprotos(Value)
+                local Upvalues = debug.getupvalues(Value)
+                local Constants = debug.getconstants(Value)
+                if #Protos == 4 and #Upvalues == 24 and #Constants == 104 then
+                    Remotes[debug.getupvalue(Value, 16)] = debug.getconstant(Value, 62)
+                    Parry_Key = debug.getupvalue(Value, 17)
+                    Remotes[debug.getupvalue(Value, 18)] = debug.getconstant(Value, 64)
+                    Remotes[debug.getupvalue(Value, 19)] = debug.getconstant(Value, 65)
+                    print("Found parry remotes and key")
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- Utility Functions
+local function GetBall()
+    for _, Ball in ipairs(Balls:GetChildren()) do
+        if Ball:GetAttribute("realBall") then
+            return Ball
+        end
+    end
+    return nil
+end
+
+local function GetClosestPlayer()
+    if not HumanoidRootPart then return nil, math.huge end
+    
+    local ClosestEntity = nil
+    local MaxDistance = math.huge
+    for _, Entity in pairs(Alive:GetChildren()) do
+        if Entity ~= Character and Entity:FindFirstChild("HumanoidRootPart") then
+            local Distance = (HumanoidRootPart.Position - Entity.HumanoidRootPart.Position).Magnitude
+            if Distance < MaxDistance then
+                MaxDistance = Distance
+                ClosestEntity = Entity
+            end
+        end
+    end
+    return ClosestEntity, MaxDistance
+end
+
+local function CalculateAverage(t)
+    local sum = 0
+    for _, v in ipairs(t) do
+        sum = sum + v
+    end
+    return sum / #t
+end
+
+local function CanParry()
+    return os.clock() - LastParryTime > Cooldown
+end
+
+local function Parry()
+    if not Parry_Key or not CanParry() then return false end
+    
+    LastParryTime = os.clock()
+    ReplicatedStorage.Remotes.ParryButtonPress:Fire()
+    
+    -- Trigger the actual parry remote
+    for Remote, RemoteKey in pairs(Remotes) do
+        if RemoteKey == "Fire" then
+            Remote:Fire(Parry_Key)
+            break
+        end
+    end
+    
+    SuccessfulParries = SuccessfulParries + 1
+    return true
+end
+
+-- Function to adjust prediction time based on ball speed
+local function AdjustPredictionTime(speed)
+    -- Dynamic prediction based on ball speed
+    local adjustedTime = BaseReactionTime
+    
+    if speed < 250 then
+        adjustedTime = BaseReactionTime + 0.05
+    elseif speed > 500 then
+        adjustedTime = BaseReactionTime - 0.03
+    end
+    
+    -- Adjust based on auto parry mode
+    if AutoParryMode == "Aggressive" then
+        adjustedTime = adjustedTime - 0.02
+    elseif AutoParryMode == "Conservative" then
+        adjustedTime = adjustedTime + 0.02
+    end
+    
+    return math.clamp(adjustedTime, 0.03, 0.15)
+end
+
+-- Function to check if ball is approaching the player
+local function IsBallApproaching(ball, ballVelocity)
+    if not ball or not HumanoidRootPart then return false end
+    
+    local ballToPlayer = (HumanoidRootPart.Position - ball.Position).Unit
+    local ballDirection = ballVelocity.Unit
+    
+    -- Calculate dot product to see if the ball is moving toward the player
+    local dotProduct = ballToPlayer:Dot(ballDirection)
+    
+    -- If the dot product is positive, the ball is moving toward the player
+    return dotProduct > 0.8
+end
+
+-- Function to predict ball trajectory
+local function PredictBallPosition(ball, velocity, timeOffset)
+    if not ball then return nil end
+    return ball.Position + (velocity * timeOffset)
+end
+
+-- Main auto parry logic (forward declaration)
+local StartAutoParry
+
+-- Function to toggle auto parry
+local function ToggleAutoParry()
+    IsAutoParryEnabled = not IsAutoParryEnabled
+    
+    print("Auto Parry: " .. (IsAutoParryEnabled and "Enabled" or "Disabled"))
+    
+    -- Update UI text if available
+    if AutoParryButton then
+        AutoParryButton.Text = "Auto Parry: " .. (IsAutoParryEnabled and "ON" or "OFF")
+    end
+    
+    if StatusLabel then
+        StatusLabel.Text = "Status: " .. (IsAutoParryEnabled and "Active" or "Inactive")
+    end
+    
+    -- Start or reset the connection
+    if IsAutoParryEnabled then
+        StartAutoParry()
+    else
+        if Connection then
+            Connection:Disconnect()
+            Connection = nil
+        end
+    end
+end
+
+-- Function to cycle through parry modes
+local function CycleParryMode()
+    if AutoParryMode == "Advanced" then
+        AutoParryMode = "Aggressive"
+    elseif AutoParryMode == "Aggressive" then
+        AutoParryMode = "Conservative"
+    else
+        AutoParryMode = "Advanced"
+    end
+    
+    print("Auto Parry Mode: " .. AutoParryMode)
+    
+    -- Update UI text if available
+    if ParryModeButton then
+        ParryModeButton.Text = "Mode: " .. AutoParryMode
+    end
+end
+
+-- Function to modify parry radius
+local function SetParryRadius(value)
+    ParryRadius = value
+    
+    print("Parry Radius set to: " .. ParryRadius)
+    
+    -- Update UI text if available
+    if RadiusLabel then
+        RadiusLabel.Text = "Parry Radius: " .. ParryRadius
+    end
+end
+
+-- Main auto parry logic implementation
+StartAutoParry = function()
+    if Connection then
+        Connection:Disconnect()
+    end
+    
+    Connection = RunService.PreSimulation:Connect(function()
+        if not IsAutoParryEnabled then return end
+        if not Parry_Key then return end
+        if not Character or not Character:FindFirstChild("HumanoidRootPart") then return end
+        
+        -- Make sure HumanoidRootPart is available
+        HumanoidRootPart = Character:FindFirstChild("HumanoidRootPart")
+        
+        local Ball = GetBall()
+        if not Ball then return end
+        
+        -- Calculate ball velocity
+        local BallVelocity = Ball.Velocity
+        local CurrentBallPosition = Ball.Position
+        local BallSpeed = BallVelocity.Magnitude
+        
+        -- Track velocity samples for better prediction
+        table.insert(PreviousVelocities, BallVelocity)
+        if #PreviousVelocities > MaxVelocitySamples then
+            table.remove(PreviousVelocities, 1)
+        end
+        
+        -- Calculate average velocity for more stable prediction
+        local AverageVelocity = Vector3.new(0, 0, 0)
+        for _, velocity in ipairs(PreviousVelocities) do
+            AverageVelocity = AverageVelocity + velocity
+        end
+        AverageVelocity = AverageVelocity / #PreviousVelocities
+        
+        -- Calculate distance from player to ball
+        BallDistance = (HumanoidRootPart.Position - CurrentBallPosition).Magnitude
+        
+        -- Update ball position for next frame
+        LastBallPosition = CurrentBallPosition
+        LastBallVelocity = BallVelocity
+        
+        -- Update stats text if UI exists
+        if StatsLabel then
+            StatsLabel.Text = "Parries: " .. SuccessfulParries .. " | Ball Distance: " .. math.floor(BallDistance)
+        end
+        
+        -- Adjust prediction time based on ball speed
+        PredictionTime = AdjustPredictionTime(BallSpeed)
+        
+        -- Check if ball is approaching and within parry radius
+        if IsBallApproaching(Ball, BallVelocity) and BallDistance <= ParryRadius then
+            -- Predict where the ball will be in the near future
+            local PredictedPosition = PredictBallPosition(Ball, AverageVelocity, PredictionTime)
+            
+            if PredictedPosition then
+                local PredictedDistance = (HumanoidRootPart.Position - PredictedPosition).Magnitude
+                
+                -- Attempt to parry if the ball will be within parry range soon
+                if PredictedDistance <= ParryRadius and CanParry() then
+                    local success = Parry()
+                    
+                    if success and DebugMode then
+                        print("Parried ball at distance: " .. BallDistance)
+                    end
+                    
+                    -- Update UI after successful parry
+                    if StatsLabel then
+                        StatsLabel.Text = "Parries: " .. SuccessfulParries .. " | Ball Distance: " .. math.floor(BallDistance)
+                    end
+                end
+            end
+        end
+    end)
+    
+    print("Auto Parry system started")
+end
+
+-- Create Simple UI
+local function CreateSimpleUI()
+    print("Creating UI...")
+    
+    -- Create ScreenGui
+    local ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "AutoParryGui"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    
+    pcall(function()
+        ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+    end)
+    
+    -- Create Main Frame
+    local MainFrame = Instance.new("Frame")
+    MainFrame.Name = "MainFrame"
+    MainFrame.Size = UDim2.new(0, 200, 0, 220)
+    MainFrame.Position = UDim2.new(0.85, -100, 0.5, -110)
+    MainFrame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    MainFrame.BorderSizePixel = 0
+    MainFrame.Active = true
+    MainFrame.Draggable = true
+    MainFrame.Parent = ScreenGui
+    
+    -- Create Title
+    local TitleLabel = Instance.new("TextLabel")
+    TitleLabel.Name = "TitleLabel"
+    TitleLabel.Size = UDim2.new(1, 0, 0, 30)
+    TitleLabel.Position = UDim2.new(0, 0, 0, 0)
+    TitleLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    TitleLabel.BorderSizePixel = 0
+    TitleLabel.Text = "Auto Parry"
+    TitleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TitleLabel.TextSize = 14
+    TitleLabel.Font = Enum.Font.GothamBold
+    TitleLabel.Parent = MainFrame
+    
+    -- Create Status Label
+    StatusLabel = Instance.new("TextLabel")
+    StatusLabel.Name = "StatusLabel"
+    StatusLabel.Size = UDim2.new(1, 0, 0, 20)
+    StatusLabel.Position = UDim2.new(0, 0, 0, 35)
+    StatusLabel.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    StatusLabel.BorderSizePixel = 0
+    StatusLabel.Text = "Status: Inactive"
+    StatusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StatusLabel.TextSize = 12
+    StatusLabel.Font = Enum.Font.Gotham
+    StatusLabel.Parent = MainFrame
+    
+    -- Create Stats Label
+    StatsLabel = Instance.new("TextLabel")
+    StatsLabel.Name = "StatsLabel"
+    StatsLabel.Size = UDim2.new(1, 0, 0, 20)
+    StatsLabel.Position = UDim2.new(0, 0, 0, 55)
+    StatsLabel.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    StatsLabel.BorderSizePixel = 0
+    StatsLabel.Text = "Parries: 0 | Ball Distance: 0"
+    StatsLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    StatsLabel.TextSize = 12
+    StatsLabel.Font = Enum.Font.Gotham
+    StatsLabel.Parent = MainFrame
+    
+    -- Create Auto Parry Button
+    AutoParryButton = Instance.new("TextButton")
+    AutoParryButton.Name = "AutoParryButton"
+    AutoParryButton.Size = UDim2.new(0, 180, 0, 25)
+    AutoParryButton.Position = UDim2.new(0.5, -90, 0, 85)
+    AutoParryButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    AutoParryButton.BorderSizePixel = 0
+    AutoParryButton.Text = "Auto Parry: OFF"
+    AutoParryButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    AutoParryButton.TextSize = 12
+    AutoParryButton.Font = Enum.Font.Gotham
+    AutoParryButton.Parent = MainFrame
+    
+    -- Create Parry Mode Button
+    ParryModeButton = Instance.new("TextButton")
+    ParryModeButton.Name = "ParryModeButton"
+    ParryModeButton.Size = UDim2.new(0, 180, 0, 25)
+    ParryModeButton.Position = UDim2.new(0.5, -90, 0, 115)
+    ParryModeButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    ParryModeButton.BorderSizePixel = 0
+    ParryModeButton.Text = "Mode: Advanced"
+    ParryModeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    ParryModeButton.TextSize = 12
+    ParryModeButton.Font = Enum.Font.Gotham
+    ParryModeButton.Parent = MainFrame
+    
+    -- Create Radius Label
+    RadiusLabel = Instance.new("TextLabel")
+    RadiusLabel.Name = "RadiusLabel"
+    RadiusLabel.Size = UDim2.new(1, 0, 0, 20)
+    RadiusLabel.Position = UDim2.new(0, 0, 0, 150)
+    RadiusLabel.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+    RadiusLabel.BorderSizePixel = 0
+    RadiusLabel.Text = "Parry Radius: " .. ParryRadius
+    RadiusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    RadiusLabel.TextSize = 12
+    RadiusLabel.Font = Enum.Font.Gotham
+    RadiusLabel.Parent = MainFrame
+    
+    -- Create Increase Radius Button
+    local IncreaseRadiusButton = Instance.new("TextButton")
+    IncreaseRadiusButton.Name = "IncreaseRadiusButton"
+    IncreaseRadiusButton.Size = UDim2.new(0, 85, 0, 25)
+    IncreaseRadiusButton.Position = UDim2.new(0, 10, 0, 175)
+    IncreaseRadiusButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    IncreaseRadiusButton.BorderSizePixel = 0
+    IncreaseRadiusButton.Text = "Radius +"
+    IncreaseRadiusButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    IncreaseRadiusButton.TextSize = 12
+    IncreaseRadiusButton.Font = Enum.Font.Gotham
+    IncreaseRadiusButton.Parent = MainFrame
+    
+    -- Create Decrease Radius Button
+    local DecreaseRadiusButton = Instance.new("TextButton")
+    DecreaseRadiusButton.Name = "DecreaseRadiusButton"
+    DecreaseRadiusButton.Size = UDim2.new(0, 85, 0, 25)
+    DecreaseRadiusButton.Position = UDim2.new(0, 105, 0, 175)
+    DecreaseRadiusButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    DecreaseRadiusButton.BorderSizePixel = 0
+    DecreaseRadiusButton.Text = "Radius -"
+    DecreaseRadiusButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    DecreaseRadiusButton.TextSize = 12
+    DecreaseRadiusButton.Font = Enum.Font.Gotham
+    DecreaseRadiusButton.Parent = MainFrame
+    
+    -- Setup button clicks
+    AutoParryButton.MouseButton1Click:Connect(ToggleAutoParry)
+    ParryModeButton.MouseButton1Click:Connect(CycleParryMode)
+    IncreaseRadiusButton.MouseButton1Click:Connect(function()
+        SetParryRadius(ParryRadius + 1)
+    end)
+    DecreaseRadiusButton.MouseButton1Click:Connect(function()
+        SetParryRadius(math.max(5, ParryRadius - 1))
+    end)
+    
+    print("UI created successfully")
+    return ScreenGui
+end
+
+-- Initialize everything
+local function Initialize()
+    print("Initializing Auto Parry script...")
+    
+    -- Create UI
+    local UI = CreateSimpleUI()
+    
+    -- Notification on script load
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Auto Parry",
+            Text = "Simple Auto Parry loaded! Use the UI to control.",
+            Duration = 5
+        })
+    end)
+    
+    print("Auto Parry script loaded successfully!")
+    print("Use the UI buttons to control Auto Parry functionality.")
+end
+
+-- Start the script
+Initialize()
+
+-- If running outside Roblox, show debug information
+if not game or not game.GetService then
+    print("\n--- Debug Information ---")
+    print("This script is designed to run in Roblox Blade Ball")
+    print("It includes a simple UI with buttons to control auto parry functionality")
+    print("Main features:")
+    print("- Auto parry with adjustable settings")
+    print("- Multiple parry modes (Advanced, Aggressive, Conservative)")
+    print("- Adjustable parry radius")
+    print("- Simple, draggable UI")
+    print("------------------------")
+end
